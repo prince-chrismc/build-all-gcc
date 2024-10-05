@@ -23,6 +23,14 @@ extract_archive() {
     fi
 }
 
+function check_root() {
+  if [[ "$EUID" -ne 0 ]]; then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+
 # Function to configure and build G++
 build_gcc() {
     local gcc_dir=$1
@@ -39,7 +47,7 @@ build_gcc() {
         download_file "$gmp_url"
         extract_archive "gmp-6.3.0.tar.xz"
         cd gmp-6.3.0
-        ./configure && make -j $(nproc) && make install
+        ./configure && make -j $(nproc) && check_root make install
         cd ..
     fi
 
@@ -49,7 +57,7 @@ build_gcc() {
         download_file "$mpfr_url"
         extract_archive "mpfr-4.2.0.tar.xz"
         cd mpfr-4.2.0
-        ./configure && make -j $(nproc) && make install
+        ./configure && make -j $(nproc) && check_root make install
         cd ..
     fi
 
@@ -59,7 +67,7 @@ build_gcc() {
         download_file "$mpc_url"
         extract_archive "mpc-1.3.1.tar.gz"
         cd mpc-1.3.1
-        ./configure && make -j $(nproc) && make install
+        ./configure && make -j $(nproc) && check_root make install
         cd ..
     fi
 
@@ -67,7 +75,7 @@ build_gcc() {
     ./configure --enable-languages=c,c++ --disable-multilib --disable-bootstrap
     make -j $(nproc)
     make -j $(nproc)
-    make install
+    check_root make install
 }
 
 if ! which g++-13 > /dev/null 2>&1; then
