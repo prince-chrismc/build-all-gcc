@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Prerequisites:
+#  - sudo apt install wget build-essential m4
+
 # Function to download a file from a URL
 download_file() {
     local url=$1
