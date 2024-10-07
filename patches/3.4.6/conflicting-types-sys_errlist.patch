@@ -1,0 +1,54 @@
+From 80790b050f1c9f09d375d655714174ddf7f10d00 Mon Sep 17 00:00:00 2001
+From: Ian Lance Taylor <ian@wasabisystems.com>
+Date: Tue, 13 Apr 2004 19:46:01 +0000
+Subject: [PATCH] strerror.c: Include config.h...
+
+	* strerror.c: Include config.h, and redefine sys_nerr and
+	sys_errlist, before including ansidecl.h and libiberty.h.
+
+From-SVN: r80650
+---
+ libiberty/ChangeLog  | 5 +++++
+ libiberty/strerror.c | 6 +++---
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/libiberty/ChangeLog b/libiberty/ChangeLog
+index 7da2d46d6082..ec90d1a395c9 100644
+--- a/libiberty/ChangeLog
++++ b/libiberty/ChangeLog
+@@ -1,3 +1,8 @@
++2004-04-13  Ian Lance Taylor  <ian@wasabisystems.com>
++
++	* strerror.c: Include config.h, and redefine sys_nerr and
++	sys_errlist, before including ansidecl.h and libiberty.h.
++
+ 2004-04-13  Jeff Law  <law@redhat.com>
+ 
+ 	* hashtab.c (htab_remove_elt_with_hash): New function.
+diff --git a/libiberty/strerror.c b/libiberty/strerror.c
+index 83a5992b4dd9..c0edb47e0c80 100644
+--- a/libiberty/strerror.c
++++ b/libiberty/strerror.c
+@@ -2,9 +2,6 @@
+    Written by Fred Fish.  fnf@cygnus.com
+    This file is in the public domain.  --Per Bothner.  */
+ 
+-#include "ansidecl.h"
+-#include "libiberty.h"
+-
+ #include "config.h"
+ 
+ #ifdef HAVE_SYS_ERRLIST
+@@ -17,6 +14,9 @@
+ #define sys_errlist sys_errlist__
+ #endif
+ 
++#include "ansidecl.h"
++#include "libiberty.h"
++
+ #include <stdio.h>
+ #include <errno.h>
+ 
+-- 
+2.43.5
+

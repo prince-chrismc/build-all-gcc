@@ -1,0 +1,40 @@
+From 833e00c01e96f61e24cd7ec97b93fad212dc914b Mon Sep 17 00:00:00 2001
+From: doko <doko@138bc75d-0d04-0410-961f-82ee72b054a4>
+Date: Thu, 7 Sep 2017 07:17:17 +0000
+Subject: [PATCH] 2017-09-07  Matthias Klose  <doko@ubuntu.com>
+
+        Backported from mainline
+        2017-07-14  Jakub Jelinek  <jakub@redhat.com>
+
+        PR sanitizer/81066
+        * sanitizer_common/sanitizer_linux.h: Cherry-pick upstream r307969.
+        * sanitizer_common/sanitizer_linux.cc: Likewise.
+        * sanitizer_common/sanitizer_stoptheworld_linux_libcdep.cc: Likewise.
+        * tsan/tsan_platform_linux.cc: Likewise.
+
+https://github.com/spack/spack/issues/15229
+https://gcc.gnu.org/git/?p=gcc.git;a=commit;h=dc517c7308573905a2ecac4c942a2cdc322a4003
+git-svn-id: svn+ssh://gcc.gnu.org/svn/gcc/branches/gcc-5-branch@251829 138bc75d-0d04-0410-961f-82ee72b054a4
+---
+ libsanitizer/sanitizer_common/sanitizer_linux.cc              |  3 +--
+ libsanitizer/sanitizer_common/sanitizer_linux.h               |  4 +---
+ .../sanitizer_common/sanitizer_stoptheworld_linux_libcdep.cc  |  2 +-
+ libsanitizer/tsan/tsan_platform_linux.cc                      |  2 +-
+ 5 files changed, 15 insertions(+), 7 deletions(-)
+
+diff --git a/libsanitizer/tsan/tsan_platform_linux.cc b/libsanitizer/tsan/tsan_platform_linux.cc
+index 3259131..b8e9078 100644
+--- a/libsanitizer/tsan/tsan_platform_linux.cc
++++ b/libsanitizer/tsan/tsan_platform_linux.cc
+@@ -377,7 +377,7 @@ bool IsGlobalVar(uptr addr) {
+ int ExtractResolvFDs(void *state, int *fds, int nfd) {
+ #if SANITIZER_LINUX
+   int cnt = 0;
+-  __res_state *statp = (__res_state*)state;
++  struct __res_state *statp = (struct __res_state*)state;
+   for (int i = 0; i < MAXNS && cnt < nfd; i++) {
+     if (statp->_u._ext.nsaddrs[i] && statp->_u._ext.nssocks[i] != -1)
+       fds[cnt++] = statp->_u._ext.nssocks[i];
+-- 
+2.9.3
+

@@ -1,0 +1,22 @@
+From 711d28b29d6cfe850940d023a28116ad254a7cba Mon Sep 17 00:00:00 2001
+From: Chris Mc <prince.chrismc@gmail.com>
+Date: Sun, 6 Oct 2024 17:15:01 -0700
+Subject: [PATCH] trying to fix open signature
+
+---
+ gcc/collect2.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/gcc/collect2.c b/gcc/collect2.c
+index 33206f5cf2ff0..3bf7b74af0e5b 100644
+--- a/gcc/collect2.c
++++ b/gcc/collect2.c
+@@ -1534,7 +1534,7 @@ collect_execute (const char *prog, char **argv, const char *redir)
+   if (redir)
+     {
+       /* Open response file.  */
+-      redir_handle = open (redir, O_WRONLY | O_TRUNC | O_CREAT);
++      redir_handle = open (redir, O_WRONLY | O_TRUNC | O_CREAT, 0644);
+ 
+       /* Duplicate the stdout and stderr file handles
+ 	 so they can be restored later.  */

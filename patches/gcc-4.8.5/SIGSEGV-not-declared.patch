@@ -1,0 +1,22 @@
+From a2e8621e9bd12cee1ba8c4d4d3e3ccb9d0061624 Mon Sep 17 00:00:00 2001
+From: Chris Mc <prince.chrismc@gmail.com>
+Date: Sat, 5 Oct 2024 23:24:08 -0700
+Subject: [PATCH] backporting of
+
+https://patchwork.ozlabs.org/project/gcc/patch/6824253.3U2boEivI2@devpool21/
+---
+ libsanitizer/asan/asan_linux.cc | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/libsanitizer/asan/asan_linux.cc b/libsanitizer/asan/asan_linux.cc
+index a030fcd397298..cb357b47752c7 100644
+--- a/libsanitizer/asan/asan_linux.cc
++++ b/libsanitizer/asan/asan_linux.cc
+@@ -25,6 +25,7 @@
+ #include <sys/types.h>
+ #include <fcntl.h>
+ #include <pthread.h>
++#include <signal.h>
+ #include <stdio.h>
+ #include <unistd.h>
+ #include <unwind.h>

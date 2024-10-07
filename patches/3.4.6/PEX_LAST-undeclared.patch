@@ -1,0 +1,4155 @@
+From a584cf65fa83edcdbcf903b479414b04ddcd07ee Mon Sep 17 00:00:00 2001
+From: Ian Lance Taylor <ian@airs.com>
+Date: Tue, 29 Mar 2005 02:08:46 +0000
+Subject: [PATCH] pex-common.c: New file.
+
+libiberty:
+	* pex-common.c: New file.
+	* pex-one.c: New file.
+	* pexecute.c: New file.
+	* pex-common.h: Include <stdio.h>.
+	(struct pex_obj): Define.
+	(struct pex_funcs): Define.
+	(pex_init_common): Declare.
+	* pex-unix.c: Rewrite.
+	* pex-win32.c: Rewrite.
+	* pex-djgpp.c: Rewrite.
+	* pex-msdos.c: Rewrite.
+	* testsuite/text-pexecute.c: New file.
+	* pexecute.txh: Rewrite.
+	* configure.ac: Check for wait3 and wait4.  Set CHECK to
+	really-check rather than check-cplus-dem.
+	* functions.texi: Rebuild.
+	* Makefile.in: Rebuild dependencies.
+	(CFILES): Add pexecute.c, pex-common.c, pex-one.c.
+	(REQUIRED_OFILES): Add pexecute.o, pex-common.o, pex-one.o.
+	* testsuite/Makefile.in (really-check): New target.
+	(check-pexecute, test-pexecute): New targets.
+	* configure: Rebuild.
+include:
+	* libiberty.h: Include <stdio.h>.
+	(PEX_RECORD_TIMES, PEX_USE_PIPES, PEX_SAVE_TEMPS): Define.
+	(PEX_LAST, PEX_SEARCH, PEX_SUFFIX, PEX_STDERR_TO_STDOUT): Define.
+	(PEX_BINARY_INPUT, PEX_BINARY_OUTPUT): Define.
+	(pex_init, pex_run, pex_read_output): Declare.
+	(pex_get_status, pex_get_times, pex_free, pex_one): Declare.
+	(struct pex_time): Define.
+
+From-SVN: r97148
+---
+ include/ChangeLog                   |  10 +
+ include/libiberty.h                 | 164 ++++++++-
+ libiberty/ChangeLog                 |  25 ++
+ libiberty/Makefile.in               |  28 +-
+ libiberty/configure                 |   6 +-
+ libiberty/configure.ac              |   6 +-
+ libiberty/functions.texi            | 258 ++++++++++----
+ libiberty/pex-common.c              | 472 +++++++++++++++++++++++++
+ libiberty/pex-common.h              |  84 +++++
+ libiberty/pex-djgpp.c               | 273 +++++++++++---
+ libiberty/pex-msdos.c               | 324 +++++++++++++----
+ libiberty/pex-one.c                 |  43 +++
+ libiberty/pex-unix.c                | 530 ++++++++++++++++++++++------
+ libiberty/pex-win32.c               | 386 +++++++++++++++-----
+ libiberty/pexecute.c                | 121 +++++++
+ libiberty/pexecute.txh              | 208 ++++++++---
+ libiberty/testsuite/Makefile.in     |  11 +
+ libiberty/testsuite/test-pexecute.c | 521 +++++++++++++++++++++++++++
+ 18 files changed, 3030 insertions(+), 440 deletions(-)
+ create mode 100644 libiberty/pex-common.c
+ create mode 100644 libiberty/pex-one.c
+ create mode 100644 libiberty/pexecute.c
+ create mode 100644 libiberty/testsuite/test-pexecute.c
+
+diff --git a/include/ChangeLog b/include/ChangeLog
+index ddb2b1a45a4c..cc6700d69940 100644
+--- a/include/ChangeLog
++++ b/include/ChangeLog
+@@ -1,3 +1,13 @@
++2005-03-28  Ian Lance Taylor  <ian@airs.com>
++
++	* libiberty.h: Include <stdio.h>.
++	(PEX_RECORD_TIMES, PEX_USE_PIPES, PEX_SAVE_TEMPS): Define.
++	(PEX_LAST, PEX_SEARCH, PEX_SUFFIX, PEX_STDERR_TO_STDOUT): Define.
++	(PEX_BINARY_INPUT, PEX_BINARY_OUTPUT): Define.
++	(pex_init, pex_run, pex_read_output): Declare.
++	(pex_get_status, pex_get_times, pex_free, pex_one): Declare.
++	(struct pex_time): Define.
++
+ 2005-03-28  Mark Mitchell <mark@codesourcery.com>
+ 
+ 	* libiberty.h (ffs): Declare, if necessary.
+diff --git a/include/libiberty.h b/include/libiberty.h
+index f1d4f464afbe..1bdf0ce8f725 100644
+--- a/include/libiberty.h
++++ b/include/libiberty.h
+@@ -1,6 +1,6 @@
+ /* Function declarations for libiberty.
+ 
+-   Copyright 2001, 2002 Free Software Foundation, Inc.
++   Copyright 2001, 2002, 2005 Free Software Foundation, Inc.
+    
+    Note - certain prototypes declared in this header file are for
+    functions whoes implementation copyright does not belong to the
+@@ -46,6 +46,8 @@ extern "C" {
+ /* Get a definition for va_list.  */
+ #include <stdarg.h>
+ 
++#include <stdio.h>
++
+ /* Build an argument vector from a string.  Allocates memory using
+    malloc.  Use freeargv to free the vector.  */
+ 
+@@ -314,6 +316,166 @@ extern void hex_init (void);
+    the argument being performed exactly once.  */
+ #define hex_value(c)	((unsigned int) _hex_value[(unsigned char) (c)])
+ 
++/* Flags for pex_init.  These are bits to be or'ed together.  */
++
++/* Record subprocess times, if possible.  */
++#define PEX_RECORD_TIMES	0x1
++
++/* Use pipes for communication between processes, if possible.  */
++#define PEX_USE_PIPES		0x2
++
++/* Save files used for communication between processes.  */
++#define PEX_SAVE_TEMPS		0x4
++
++/* Prepare to execute one or more programs, with standard output of
++   each program fed to standard input of the next.
++   FLAGS	As above.
++   PNAME	The name of the program to report in error messages.
++   TEMPBASE	A base name to use for temporary files; may be NULL to
++   		use a random name.
++   Returns NULL on error.  */
++
++extern struct pex_obj *pex_init (int flags, const char *pname,
++				 const char *tempbase);
++
++/* Flags for pex_run.  These are bits to be or'ed together.  */
++
++/* Last program in pipeline.  Standard output of program goes to
++   OUTNAME, or, if OUTNAME is NULL, to standard output of caller.  Do
++   not set this if you want to call pex_read_output.  After this is
++   set, pex_run may no longer be called with the same struct
++   pex_obj.  */
++#define PEX_LAST		0x1
++
++/* Search for program in executable search path.  */
++#define PEX_SEARCH		0x2
++
++/* OUTNAME is a suffix.  */
++#define PEX_SUFFIX		0x4
++
++/* Send program's standard error to standard output.  */
++#define PEX_STDERR_TO_STDOUT	0x8
++
++/* Input file should be opened in binary mode.  This flag is ignored
++   on Unix.  */
++#define PEX_BINARY_INPUT	0x10
++
++/* Output file should be opened in binary mode.  This flag is ignored
++   on Unix.  For proper behaviour PEX_BINARY_INPUT and
++   PEX_BINARY_OUTPUT have to match appropriately--i.e., a call using
++   PEX_BINARY_OUTPUT should be followed by a call using
++   PEX_BINARY_INPUT.  */
++#define PEX_BINARY_OUTPUT	0x20
++
++/* Execute one program.  Returns NULL on success.  On error returns an
++   error string (typically just the name of a system call); the error
++   string is statically allocated.
++
++   OBJ		Returned by pex_init.
++
++   FLAGS	As above.
++
++   EXECUTABLE	The program to execute.
++
++   ARGV		NULL terminated array of arguments to pass to the program.
++
++   OUTNAME	Sets the output file name as follows:
++
++		PEX_SUFFIX set (OUTNAME may not be NULL):
++		  TEMPBASE parameter to pex_init not NULL:
++		    Output file name is the concatenation of TEMPBASE
++		    and OUTNAME.
++		  TEMPBASE is NULL:
++		    Output file name is a random file name ending in
++		    OUTNAME.
++		PEX_SUFFIX not set:
++		  OUTNAME not NULL:
++		    Output file name is OUTNAME.
++		  OUTNAME NULL, TEMPBASE not NULL:
++		    Output file name is randomly chosen using
++		    TEMPBASE.
++		  OUTNAME NULL, TEMPBASE NULL:
++		    Output file name is randomly chosen.
++
++		If PEX_LAST is not set, the output file name is the
++   		name to use for a temporary file holding stdout, if
++   		any (there will not be a file if PEX_USE_PIPES is set
++   		and the system supports pipes).  If a file is used, it
++   		will be removed when no longer needed unless
++   		PEX_SAVE_TEMPS is set.
++
++		If PEX_LAST is set, and OUTNAME is not NULL, standard
++   		output is written to the output file name.  The file
++   		will not be removed.  If PEX_LAST and PEX_SUFFIX are
++   		both set, TEMPBASE may not be NULL.
++
++   ERRNAME	If not NULL, this is the name of a file to which
++		standard error is written.  If NULL, standard error of
++		the program is standard error of the caller.
++
++   ERR		On an error return, *ERR is set to an errno value, or
++   		to 0 if there is no relevant errno.
++*/
++
++extern const char *pex_run (struct pex_obj *obj, int flags,
++			    const char *executable, char * const *argv,
++			    const char *outname, const char *errname,
++			    int *err);
++
++/* Read the standard output of the last program to be executed.
++   pex_run can not be called after this.  BINARY should be non-zero if
++   the file should be opened in binary mode; this is ignored on Unix.
++   Returns NULL on error.  Don't call fclose on the returned FILE; it
++   will be closed by pex_free.  */
++
++extern FILE *pex_read_output (struct pex_obj *, int binary);
++
++/* Return exit status of all programs in VECTOR.  COUNT indicates the
++   size of VECTOR.  The status codes in the vector are in the order of
++   the calls to pex_run.  Returns 0 on error, 1 on success.  */
++
++extern int pex_get_status (struct pex_obj *, int count, int *vector);
++
++/* Return times of all programs in VECTOR.  COUNT indicates the size
++   of VECTOR.  struct pex_time is really just struct timeval, but that
++   is not portable to all systems.  Returns 0 on error, 1 on
++   success.  */
++
++struct pex_time
++{
++  unsigned long user_seconds;
++  unsigned long user_microseconds;
++  unsigned long system_seconds;
++  unsigned long system_microseconds;
++};
++
++extern int pex_get_times (struct pex_obj *, int count,
++			  struct pex_time *vector);
++
++/* Clean up a pex_obj.  */
++
++  extern void pex_free (struct pex_obj *);
++
++/* Just execute one program.  Return value is as for pex_run.
++   FLAGS	Combination of PEX_SEARCH and PEX_STDERR_TO_STDOUT.
++   EXECUTABLE	As for pex_run.
++   ARGV		As for pex_run.
++   PNAME	As for pex_init.
++   OUTNAME	As for pex_run when PEX_LAST is set.
++   ERRNAME	As for pex_run.
++   STATUS	Set to exit status on success.
++   ERR		As for pex_run.
++*/
++
++extern const char *pex_one (int flags, const char *executable,
++			    char * const *argv, const char *pname,
++			    const char *outname, const char *errname,
++			    int *status, int *err);
++
++/* pexecute and pwait are the old pexecute interface, still here for
++   backward compatibility.  Don't use these for new code.  Instead,
++   use pex_init/pex_run/pex_get_status/pex_free, or pex_one.  */
++
+ /* Definitions used by the pexecute routine.  */
+ 
+ #define PEXECUTE_FIRST   1
+diff --git a/libiberty/ChangeLog b/libiberty/ChangeLog
+index 569a25ff5ac1..412a4aaa5d8c 100644
+--- a/libiberty/ChangeLog
++++ b/libiberty/ChangeLog
+@@ -1,3 +1,28 @@
++2005-03-28  Ian Lance Taylor  <ian@airs.com>
++
++	* pex-common.c: New file.
++	* pex-one.c: New file.
++	* pexecute.c: New file.
++	* pex-common.h: Include <stdio.h>.
++	(struct pex_obj): Define.
++	(struct pex_funcs): Define.
++	(pex_init_common): Declare.
++	* pex-unix.c: Rewrite.
++	* pex-win32.c: Rewrite.
++	* pex-djgpp.c: Rewrite.
++	* pex-msdos.c: Rewrite.
++	* testsuite/text-pexecute.c: New file.
++	* pexecute.txh: Rewrite.
++	* configure.ac: Check for wait3 and wait4.  Set CHECK to
++	really-check rather than check-cplus-dem.
++	* functions.texi: Rebuild.
++	* Makefile.in: Rebuild dependencies.
++	(CFILES): Add pexecute.c, pex-common.c, pex-one.c.
++	(REQUIRED_OFILES): Add pexecute.o, pex-common.o, pex-one.o.
++	* testsuite/Makefile.in (really-check): New target.
++	(check-pexecute, test-pexecute): New targets.
++	* configure: Rebuild.
++
+ 2005-03-28  Mark Kettenis  <kettenis@gnu.org>
+ 	
+ 	* unlink-if-ordinary.c: Include <sys/types.h>.
+diff --git a/libiberty/Makefile.in b/libiberty/Makefile.in
+index 092d8d5ec4d9..78957ee46629 100644
+--- a/libiberty/Makefile.in
++++ b/libiberty/Makefile.in
+@@ -142,8 +142,8 @@ CFILES = alloca.c argv.c asprintf.c atexit.c				\
+ 	make-temp-file.c md5.c memchr.c memcmp.c memcpy.c memmove.c	\
+ 	 mempcpy.c memset.c mkstemps.c					\
+ 	objalloc.c obstack.c						\
+-	partition.c							\
+-	 pex-djgpp.c pex-msdos.c					\
++	partition.c pexecute.c						\
++	 pex-common.c pex-djgpp.c pex-msdos.c pex-one.c			\
+ 	 pex-unix.c pex-win32.c						\
+          physmem.c putenv.c						\
+ 	random.c regex.c rename.c rindex.c				\
+@@ -170,7 +170,8 @@ REQUIRED_OFILES = ./regex.o ./cplus-dem.o ./cp-demangle.o ./md5.o	\
+ 	./lbasename.o ./lrealpath.o					\
+ 	./make-relative-prefix.o ./make-temp-file.o			\
+ 	./objalloc.o ./obstack.o					\
+-	./partition.o ./physmem.o @pexecute@				\
++	./partition.o ./pexecute.o ./physmem.o				\
++	./pex-common.o ./pex-one.o @pexecute@				\
+ 	./safe-ctype.o ./sort.o ./spaces.o ./splay-tree.o ./strerror.o	\
+ 	 ./strsignal.o							\
+ 	./ternary.o							\
+@@ -756,6 +757,13 @@ $(CONFIGURED_OFILES): stamp-picdir
+ 	else true; fi
+ 	$(COMPILE.c) $(srcdir)/partition.c $(OUTPUT_OPTION)
+ 
++./pex-common.o: $(srcdir)/pex-common.c config.h $(INCDIR)/ansidecl.h \
++	$(INCDIR)/libiberty.h $(srcdir)/pex-common.h
++	if [ x"$(PICFLAG)" != x ]; then \
++	  $(COMPILE.c) $(PICFLAG) $(srcdir)/pex-common.c -o pic/$@; \
++	else true; fi
++	$(COMPILE.c) $(srcdir)/pex-common.c $(OUTPUT_OPTION)
++
+ ./pex-djgpp.o: $(srcdir)/pex-djgpp.c config.h $(INCDIR)/ansidecl.h \
+ 	$(INCDIR)/libiberty.h $(srcdir)/pex-common.h
+ 	if [ x"$(PICFLAG)" != x ]; then \
+@@ -771,6 +779,13 @@ $(CONFIGURED_OFILES): stamp-picdir
+ 	else true; fi
+ 	$(COMPILE.c) $(srcdir)/pex-msdos.c $(OUTPUT_OPTION)
+ 
++./pex-one.o: $(srcdir)/pex-one.c config.h $(INCDIR)/ansidecl.h \
++	$(INCDIR)/libiberty.h
++	if [ x"$(PICFLAG)" != x ]; then \
++	  $(COMPILE.c) $(PICFLAG) $(srcdir)/pex-one.c -o pic/$@; \
++	else true; fi
++	$(COMPILE.c) $(srcdir)/pex-one.c $(OUTPUT_OPTION)
++
+ ./pex-unix.o: $(srcdir)/pex-unix.c config.h $(INCDIR)/ansidecl.h \
+ 	$(INCDIR)/libiberty.h $(srcdir)/pex-common.h
+ 	if [ x"$(PICFLAG)" != x ]; then \
+@@ -785,6 +800,13 @@ $(CONFIGURED_OFILES): stamp-picdir
+ 	else true; fi
+ 	$(COMPILE.c) $(srcdir)/pex-win32.c $(OUTPUT_OPTION)
+ 
++./pexecute.o: $(srcdir)/pexecute.c config.h $(INCDIR)/ansidecl.h \
++	$(INCDIR)/libiberty.h
++	if [ x"$(PICFLAG)" != x ]; then \
++	  $(COMPILE.c) $(PICFLAG) $(srcdir)/pexecute.c -o pic/$@; \
++	else true; fi
++	$(COMPILE.c) $(srcdir)/pexecute.c $(OUTPUT_OPTION)
++
+ ./physmem.o: $(srcdir)/physmem.c config.h $(INCDIR)/ansidecl.h \
+ 	$(INCDIR)/libiberty.h
+ 	if [ x"$(PICFLAG)" != x ]; then \
+diff --git a/libiberty/configure b/libiberty/configure
+index 1435cd26f5d4..f76d3c5732f4 100755
+--- a/libiberty/configure
++++ b/libiberty/configure
+@@ -4818,7 +4818,7 @@ vars="sys_errlist sys_nerr sys_siglist"
+ 
+ checkfuncs="getrusage on_exit psignal strerror strsignal sysconf times sbrk gettimeofday"
+ checkfuncs="$checkfuncs realpath canonicalize_file_name pstat_getstatic pstat_getdynamic sysmp"
+-checkfuncs="$checkfuncs getsysinfo table sysctl"
++checkfuncs="$checkfuncs getsysinfo table sysctl wait3 wait4"
+ 
+ # These are neither executed nor required, but they help keep
+ # autoheader happy without adding a bunch of text to acconfig.h.
+@@ -4895,7 +4895,7 @@ for ac_func in asprintf atexit basename bcmp bcopy bsearch bzero calloc clock \
+   strtod strtol strtoul tmpnam vasprintf vfprintf vprintf \
+   vsprintf waitpid getrusage on_exit psignal strerror strsignal \
+   sysconf times sbrk gettimeofday ffs snprintf vsnprintf \
+-  pstat_getstatic pstat_getdynamic sysmp getsysinfo table sysctl \
++  pstat_getstatic pstat_getdynamic sysmp getsysinfo table sysctl wait3 wait4 \
+   realpath canonicalize_file_name
+ do
+ as_ac_var=`echo "ac_cv_func_$ac_func" | $as_tr_sh`
+@@ -5133,7 +5133,7 @@ fi;
+ else
+ 
+    # Not a target library, so we set things up to run the test suite.
+-   CHECK=check-cplus-dem
++   CHECK=really-check
+ 
+ fi
+ 
+diff --git a/libiberty/configure.ac b/libiberty/configure.ac
+index e000825e383d..6c4347da36c6 100644
+--- a/libiberty/configure.ac
++++ b/libiberty/configure.ac
+@@ -268,7 +268,7 @@ vars="sys_errlist sys_nerr sys_siglist"
+ 
+ checkfuncs="getrusage on_exit psignal strerror strsignal sysconf times sbrk gettimeofday"
+ checkfuncs="$checkfuncs realpath canonicalize_file_name pstat_getstatic pstat_getdynamic sysmp"
+-checkfuncs="$checkfuncs getsysinfo table sysctl"
++checkfuncs="$checkfuncs getsysinfo table sysctl wait3 wait4"
+ 
+ # These are neither executed nor required, but they help keep
+ # autoheader happy without adding a bunch of text to acconfig.h.
+@@ -280,7 +280,7 @@ if test "x" = "y"; then
+   strtod strtol strtoul tmpnam vasprintf vfprintf vprintf \
+   vsprintf waitpid getrusage on_exit psignal strerror strsignal \
+   sysconf times sbrk gettimeofday ffs snprintf vsnprintf \
+-  pstat_getstatic pstat_getdynamic sysmp getsysinfo table sysctl \
++  pstat_getstatic pstat_getdynamic sysmp getsysinfo table sysctl wait3 wait4 \
+   realpath canonicalize_file_name)
+   AC_DEFINE(HAVE_SYS_ERRLIST, 1, [Define if you have the sys_errlist variable.])
+   AC_DEFINE(HAVE_SYS_NERR,    1, [Define if you have the sys_nerr variable.])
+@@ -357,7 +357,7 @@ if test -n "${with_target_subdir}"; then
+ else
+ 
+    # Not a target library, so we set things up to run the test suite.
+-   CHECK=check-cplus-dem
++   CHECK=really-check
+ 
+ fi
+ 
+diff --git a/libiberty/functions.texi b/libiberty/functions.texi
+index 79c8a35b3ca4..a886b8857040 100644
+--- a/libiberty/functions.texi
++++ b/libiberty/functions.texi
+@@ -3,7 +3,7 @@
+ @c Edit the *.c files, configure with --enable-maintainer-mode,
+ @c and let gather-docs build you a new copy.
+ 
+-@c safe-ctype.c:24
++@c safe-ctype.c:25
+ @defvr Extension HOST_CHARSET
+ This macro indicates the basic character set and encoding used by the
+ host: more precisely, the encoding used for character constants in
+@@ -25,6 +25,139 @@ nineteen EBCDIC varying characters is tested; exercise caution.)
+ @end ftable
+ @end defvr
+ 
++@c pexecute.txh:1
++@deftypefn Extension struct pex_obj *pex_init (int @var{flags}, const char *@var{pname}, const char *@var{tempbase})
++
++Prepare to execute one or more programs, with standard output of each
++program fed to standard input of the next.  This is a system
++independent interface to execute a pipeline.
++
++@var{flags} is a bitwise combination of the following:
++
++@table @code
++
++@vindex PEX_RECORD_TIMES
++@item PEX_RECORD_TIMES
++Record subprocess times if possible.
++
++@vindex PEX_USE_PIPES
++@item PEX_USE_PIPES
++Use pipes for communication between processes, if possible.
++
++@vindex PEX_SAVE_TEMPS
++@item PEX_SAVE_TEMPS
++Don't delete temporary files used for communication between
++processes.
++
++@end table
++
++@var{pname} is the name of program to be executed, used in error
++messages.  @var{tempbase} is a base name to use for any required
++temporary files; it may be @code{NULL} to use a randomly chosen name.
++
++@end deftypefn
++
++@c pexecute.txh:161
++@deftypefn Extension const char *pex_one (int @var{flags}, const char *@var{executable}, char * const *@var{argv}, const char *@var{pname}, const char *@var{outname}, const char *@var{errname}, int *@var{status}, int *@var{err})
++
++An interface to @code{pex_init} to permit the easy execution of a
++single program.  The return value and most of the parameters are as
++for a call to @code{pex_run}.  @var{flags} is restricted to a
++combination of @code{PEX_SEARCH}, @code{PEX_STDERR_TO_STDOUT}, and
++@code{PEX_BINARY_OUTPUT}.  @var{outname} is interpreted as if
++@code{PEX_LAST} were set.  On a successful return, *@var{status} will
++be set to the exit status of the program.
++
++@end deftypefn
++
++@c pexecute.txh:32
++@deftypefn Extension const char *pex_run (struct pex_obj *@var{obj}, int @var{flags}, const char *@var{executable}, char * const *@var{argv}, const char *@var{outname}, const char *@var{errname}, int *@var{err})
++
++Execute one program in a pipeline.  On success this returns
++@code{NULL}.  On failure it returns an error message, a statically
++allocated string.
++
++@var{obj} is returned by a previous call to @code{pex_init}.
++
++@var{flags} is a bitwise combination of the following:
++
++@table @code
++
++@vindex PEX_LAST
++@item PEX_LAST
++This must be set on the last program in the pipeline.  In particular,
++it should be set when executing a single program.  The standard output
++of the program will be sent to @var{outname}, or, if @var{outname} is
++@code{NULL}, to the standard output of the calling program.  This
++should not be set if you want to call @code{pex_read_output}
++(described below).  After a call to @code{pex_run} with this bit set,
++@var{pex_run} may no longer be called with the same @var{obj}.
++
++@vindex PEX_SEARCH
++@item PEX_SEARCH
++Search for the program using the user's executable search path.
++
++@vindex PEX_SUFFIX
++@item PEX_SUFFIX
++@var{outname} is a suffix.  See the description of @var{outname},
++below.
++
++@vindex PEX_STDERR_TO_STDOUT
++@item PEX_STDERR_TO_STDOUT
++Send the program's standard error to standard output, if possible.
++
++@vindex PEX_BINARY_INPUT
++@vindex PEX_BINARY_OUTPUT
++@item PEX_BINARY_INPUT
++@itemx PEX_BINARY_OUTPUT
++The standard input (output) of the program should be read (written) in
++binary mode rather than text mode.  These flags are ignored on systems
++which do not distinguish binary mode and text mode, such as Unix.  For
++proper behavior these flags should match appropriately--a call to
++@code{pex_run} using @code{PEX_BINARY_OUTPUT} should be followed by a
++call using @code{PEX_BINARY_INPUT}.
++@end table
++
++@var{executable} is the program to execute.  @var{argv} is the set of
++arguments to pass to the program; normally @code{@var{argv}[0]} will
++be a copy of @var{executable}.
++
++@var{outname} is used to set the name of the file to use for standard
++output.  There are two cases in which no output file will be used: 1)
++if @code{PEX_LAST} is not set in @var{flags}, and @code{PEX_USE_PIPES}
++was set in the call to @code{pex_init}, and the system supports pipes;
++2) if @code{PEX_LAST} is set in @var{flags}, and @var{outname} is
++@code{NULL}.  Otherwise the code will use a file to hold standard
++output.  If @code{PEX_LAST} is not set, this file is considered to be
++a temporary file, and it will be removed when no longer needed, unless
++@code{PEX_SAVE_TEMPS} was set in the call to @code{pex_init}.
++
++There are two cases to consider when setting the name of the file to
++hold standard output.
++
++First case: @code{PEX_SUFFIX} is set in @var{flags}.  In this case
++@var{outname} may not be @code{NULL}.  If the @var{tempbase} parameter
++to @code{pex_init} was not @code{NULL}, then the output file name is
++the concatenation of @var{tempbase} and @var{outname}.  If
++@var{tempbase} was @code{NULL}, then the output file name is a random
++file name ending in @var{outname}.
++
++Second case: @code{PEX_SUFFIX} was not set in @var{flags}.  In this
++case, if @var{outname} is not @code{NULL}, it is used as the output
++file name.  If @var{outname} is @code{NULL}, and @var{tempbase} was
++not NULL, the output file name is randomly chosen using
++@var{tempbase}.  Otherwise the output file name is chosen completely
++at random.
++
++@var{errname} is the file name to use for standard error output.  If
++it is @code{NULL}, standard error is the same as the caller.
++Otherwise, standard error is written to the named file.
++
++On an error return, the code sets @code{*@var{err}} to an @code{errno}
++value, or to 0 if there is no relevant @code{errno}.
++
++@end deftypefn
++
+ @c alloca.c:26
+ @deftypefn Replacement void* alloca (size_t @var{size})
+ 
+@@ -43,7 +176,7 @@ the possibility of a GCC built-in function.
+ 
+ @end deftypefn
+ 
+-@c asprintf.c:33
++@c asprintf.c:29
+ @deftypefn Extension int asprintf (char **@var{resptr}, const char *@var{format}, ...)
+ 
+ Like @code{sprintf}, but instead of passing a pointer to a buffer, you
+@@ -104,7 +237,7 @@ is respectively less than, matching, or greater than the array member.
+ 
+ @end deftypefn
+ 
+-@c argv.c:139
++@c argv.c:121
+ @deftypefn Extension char** buildargv (char *@var{sp})
+ 
+ Given a pointer to a string, parse the string extracting fields
+@@ -158,7 +291,7 @@ not recommended.
+ 
+ @end deftypefn
+ 
+-@c make-temp-file.c:88
++@c make-temp-file.c:87
+ @deftypefn Replacement char* choose_tmpdir ()
+ 
+ Returns a pointer to a directory path suitable for creating temporary
+@@ -185,7 +318,7 @@ pointer encountered.  Pointers to empty strings are ignored.
+ 
+ @end deftypefn
+ 
+-@c argv.c:65
++@c argv.c:49
+ @deftypefn Extension char** dupargv (char **@var{vector})
+ 
+ Duplicate an argument vector.  Simply scans through @var{vector},
+@@ -288,7 +421,7 @@ Ignores case when performing the comparison.
+ 
+ @end deftypefn
+ 
+-@c argv.c:111
++@c argv.c:94
+ @deftypefn Extension void freeargv (char **@var{vector})
+ 
+ Free an argument vector that was built using @code{buildargv}.  Simply
+@@ -412,7 +545,7 @@ struct qelem @{
+ 
+ @end deftypefn
+ 
+-@c safe-ctype.c:45
++@c safe-ctype.c:46
+ @deffn  Extension ISALPHA  (@var{c})
+ @deffnx Extension ISALNUM  (@var{c})
+ @deffnx Extension ISBLANK  (@var{c})
+@@ -462,7 +595,7 @@ false for characters with numeric values from 128 to 255.
+ @end itemize
+ @end deffn
+ 
+-@c safe-ctype.c:94
++@c safe-ctype.c:95
+ @deffn  Extension ISIDNUM         (@var{c})
+ @deffnx Extension ISIDST          (@var{c})
+ @deffnx Extension IS_VSPACE       (@var{c})
+@@ -535,7 +668,7 @@ relative prefix can be found, return @code{NULL}.
+ 
+ @end deftypefn
+ 
+-@c make-temp-file.c:138
++@c make-temp-file.c:137
+ @deftypefn Replacement char* make_temp_file (const char *@var{suffix})
+ 
+ Return a temporary file name (as a string) or @code{NULL} if unable to
+@@ -618,46 +751,62 @@ reading and writing.
+ 
+ @end deftypefn
+ 
+-@c pexecute.txh:1
+-@deftypefn Extension int pexecute (const char *@var{program}, char * const *@var{argv}, const char *@var{this_pname}, const char *@var{temp_base}, char **@var{errmsg_fmt}, char **@var{errmsg_arg}, int flags)
++@c pexecute.txh:155
++@deftypefn Extension void pex_free (struct pex_obj @var{obj})
+ 
+-Executes a program.
++Clean up and free all data associated with @var{obj}.
+ 
+-@var{program} and @var{argv} are the arguments to
+-@code{execv}/@code{execvp}.
++@end deftypefn
+ 
+-@var{this_pname} is name of the calling program (i.e., @code{argv[0]}).
++@c pexecute.txh:131
++@deftypefn Extension int pex_get_status (struct pex_obj *@var{obj}, int @var{count}, int *@var{vector})
+ 
+-@var{temp_base} is the path name, sans suffix, of a temporary file to
+-use if needed.  This is currently only needed for MS-DOS ports that
+-don't use @code{go32} (do any still exist?).  Ports that don't need it
+-can pass @code{NULL}.
++Returns the exit status of all programs run using @var{obj}.
++@var{count} is the number of results expected.  The results will be
++placed into @var{vector}.  The results are in the order of the calls
++to @code{pex_run}.  Returns 0 on error, 1 on success.
+ 
+-(@code{@var{flags} & PEXECUTE_SEARCH}) is non-zero if @env{PATH}
+-should be searched (??? It's not clear that GCC passes this flag
+-correctly).  (@code{@var{flags} & PEXECUTE_FIRST}) is nonzero for the
+-first process in chain.  (@code{@var{flags} & PEXECUTE_FIRST}) is
+-nonzero for the last process in chain.  The first/last flags could be
+-simplified to only mark the last of a chain of processes but that
+-requires the caller to always mark the last one (and not give up
+-early if some error occurs).  It's more robust to require the caller
+-to mark both ends of the chain.
++@end deftypefn
+ 
+-The result is the pid on systems like Unix where we
+-@code{fork}/@code{exec} and on systems like WIN32 and OS/2 where we
+-use @code{spawn}.  It is up to the caller to wait for the child.
++@c pexecute.txh:140
++@deftypefn Extension int pex_get_times (struct pex_obj *@var{obj}, int @var{count}, struct pex_time *@var{vector})
+ 
+-The result is the @code{WEXITSTATUS} on systems like MS-DOS where we
+-@code{spawn} and wait for the child here.
++Returns the process execution times of all programs run using
++@var{obj}.  @var{count} is the number of results expected.  The
++results will be placed into @var{vector}.  The results are in the
++order of the calls to @code{pex_run}.  Returns 0 on error, 1 on
++success.
+ 
+-Upon failure, @var{errmsg_fmt} and @var{errmsg_arg} are set to the
+-text of the error message with an optional argument (if not needed,
+-@var{errmsg_arg} is set to @code{NULL}), and @minus{}1 is returned.
+-@code{errno} is available to the caller to use.
++@code{struct pex_time} has the following fields: @code{user_seconds},
++@code{user_microseconds}, @code{system_seconds},
++@code{system_microseconds}.  On systems which do not support reporting
++process times, all the fields will be set to @code{0}.
+ 
+ @end deftypefn
+ 
+-@c strsignal.c:546
++@c pexecute.txh:119
++@deftypefn Extension FILE * pex_read_output (struct pex_obj *@var{obj}, int @var{binary})
++
++Returns a @code{FILE} pointer which may be used to read the standard
++output of the last program in the pipeline.  When this is used,
++@code{PEX_LAST} should not be used in a call to @code{pex_run}.  After
++this is called, @code{pex_run} may no longer be called with the same
++@var{obj}.  @var{binary} should be non-zero if the file should be
++opened in binary mode.  Don't call @code{fclose} on the returned file;
++it will be closed by @code{pex_free}.
++
++@end deftypefn
++
++@c pexecute.txh:173
++@deftypefn Extension int pexecute (const char *@var{program}, char * const *@var{argv}, const char *@var{this_pname}, const char *@var{temp_base}, char **@var{errmsg_fmt}, char **@var{errmsg_arg}, int flags)
++
++This is the old interface to execute one or more programs.  It is
++still supported for compatibility purposes, but is no longer
++documented.
++
++@end deftypefn
++
++@c strsignal.c:539
+ @deftypefn Supplemental void psignal (unsigned @var{signo}, char *@var{message})
+ 
+ Print @var{message} to the standard error, followed by a colon,
+@@ -676,23 +825,10 @@ name is unset/removed.
+ 
+ @end deftypefn
+ 
+-@c pexecute.txh:39
++@c pexecute.txh:181
+ @deftypefn Extension int pwait (int @var{pid}, int *@var{status}, int @var{flags})
+ 
+-Waits for a program started by @code{pexecute} to finish.
+-
+-@var{pid} is the process id of the task to wait for. @var{status} is
+-the `status' argument to wait. @var{flags} is currently unused
+-(allows future enhancement without breaking upward compatibility).
+-Pass 0 for now.
+-
+-The result is the pid of the child reaped, or -1 for failure
+-(@code{errno} says why).
+-
+-On systems that don't support waiting for a particular child,
+-@var{pid} is ignored.  On systems like MS-DOS that don't really
+-multitask @code{pwait} is just a mechanism to provide a consistent
+-interface for the caller.
++Another part of the old execution interface.
+ 
+ @end deftypefn
+ 
+@@ -711,7 +847,7 @@ control over the state of the random number generator.
+ 
+ @end deftypefn
+ 
+-@c concat.c:177
++@c concat.c:167
+ @deftypefn Extension char* reconcat (char *@var{optr}, const char *@var{s1}, @dots{}, @code{NULL})
+ 
+ Same as @code{concat}, except that if @var{optr} is not @code{NULL} it
+@@ -754,7 +890,7 @@ environment.  This implementation is not safe for multithreaded code.
+ 
+ @end deftypefn
+ 
+-@c strsignal.c:352
++@c strsignal.c:348
+ @deftypefn Extension int signo_max (void)
+ 
+ Returns the maximum signal value for which a corresponding symbolic
+@@ -845,7 +981,7 @@ Returns a pointer to a copy of @var{s} in memory obtained from
+ 
+ @end deftypefn
+ 
+-@c strerror.c:671
++@c strerror.c:670
+ @deftypefn Replacement {const char*} strerrno (int @var{errnum})
+ 
+ Given an error number returned from a system call (typically returned
+@@ -919,7 +1055,7 @@ null character, the results are undefined.
+ 
+ @end deftypefn
+ 
+-@c strsignal.c:387
++@c strsignal.c:383
+ @deftypefn Supplemental {const char *} strsignal (int @var{signo})
+ 
+ Maps an signal number to an signal message string, the contents of
+@@ -940,7 +1076,7 @@ call to @code{strsignal}.
+ 
+ @end deftypefn
+ 
+-@c strsignal.c:451
++@c strsignal.c:446
+ @deftypefn Extension {const char*} strsigno (int @var{signo})
+ 
+ Given an signal number, returns a pointer to a string containing the
+@@ -982,7 +1118,7 @@ the location referenced by @var{endptr}.
+ 
+ @end deftypefn
+ 
+-@c strerror.c:731
++@c strerror.c:729
+ @deftypefn Extension int strtoerrno (const char *@var{name})
+ 
+ Given the symbolic name of a error number (e.g., @code{EACCES}), map it
+@@ -1006,7 +1142,7 @@ that the converted value is unsigned.
+ 
+ @end deftypefn
+ 
+-@c strsignal.c:506
++@c strsignal.c:500
+ @deftypefn Extension int strtosigno (const char *@var{name})
+ 
+ Given the symbolic name of a signal, map it to a signal number.  If no
+@@ -1035,7 +1171,7 @@ was made to unlink the file because it is special.
+ 
+ @end deftypefn
+ 
+-@c vasprintf.c:51
++@c vasprintf.c:47
+ @deftypefn Extension int vasprintf (char **@var{resptr}, const char *@var{format}, va_list @var{args})
+ 
+ Like @code{vsprintf}, but instead of passing a pointer to a buffer,
+diff --git a/libiberty/pex-common.c b/libiberty/pex-common.c
+new file mode 100644
+index 000000000000..e02dcedbd9e3
+--- /dev/null
++++ b/libiberty/pex-common.c
+@@ -0,0 +1,472 @@
++/* Common code for executing a program in a sub-process.
++   Copyright (C) 2005 Free Software Foundation, Inc.
++   Written by Ian Lance Taylor <ian@airs.com>.
++
++This file is part of the libiberty library.
++Libiberty is free software; you can redistribute it and/or
++modify it under the terms of the GNU Library General Public
++License as published by the Free Software Foundation; either
++version 2 of the License, or (at your option) any later version.
++
++Libiberty is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++Library General Public License for more details.
++
++You should have received a copy of the GNU Library General Public
++License along with libiberty; see the file COPYING.LIB.  If not,
++write to the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++Boston, MA 02111-1307, USA.  */
++
++#include "config.h"
++#include "libiberty.h"
++#include "pex-common.h"
++
++#include <stdio.h>
++#include <errno.h>
++#ifdef NEED_DECLARATION_ERRNO
++extern int errno;
++#endif
++#ifdef HAVE_STDLIB_H
++#include <stdlib.h>
++#endif
++#ifdef HAVE_STRING_H
++#include <string.h>
++#endif
++#ifdef HAVE_UNISTD_H
++#include <unistd.h>
++#endif
++
++extern int mkstemps (char *, int);
++
++/* This file contains subroutines for the program execution routines
++   (pex_init, pex_run, etc.).  This file is compiled on all
++   systems.  */
++
++static void pex_add_remove (struct pex_obj *, const char *, int);
++static int pex_get_status_and_time (struct pex_obj *, int, const char **,
++				    int *);
++
++/* Initialize a pex_obj structure.  */
++
++struct pex_obj *
++pex_init_common (int flags, const char *pname, const char *tempbase,
++		 const struct pex_funcs *funcs)
++{
++  struct pex_obj *obj;
++
++  obj = xmalloc (sizeof (*obj));
++  obj->flags = flags;
++  obj->pname = pname;
++  obj->tempbase = tempbase;
++  obj->next_input = STDIN_FILE_NO;
++  obj->next_input_name = NULL;
++  obj->next_input_name_allocated = 0;
++  obj->count = 0;
++  obj->children = NULL;
++  obj->status = NULL;
++  obj->time = NULL;
++  obj->number_waited = 0;
++  obj->read_output = NULL;
++  obj->remove_count = 0;
++  obj->remove = NULL;
++  obj->funcs = funcs;
++  obj->sysdep = NULL;
++  return obj;
++}
++
++/* Add a file to be removed when we are done.  */
++
++static void
++pex_add_remove (struct pex_obj *obj, const char *name, int allocated)
++{
++  char *add;
++
++  ++obj->remove_count;
++  obj->remove = xrealloc (obj->remove, obj->remove_count * sizeof (char *));
++  if (allocated)
++    add = (char *) name;
++  else
++    add = xstrdup (name);
++  obj->remove[obj->remove_count - 1] = add;
++}
++
++/* Run a program.  */
++
++const char *
++pex_run (struct pex_obj *obj, int flags, const char *executable,
++	 char * const * argv, const char *orig_outname, const char *errname,
++	 int *err)
++{
++  const char *errmsg;
++  int in, out, errdes;
++  char *outname;
++  int outname_allocated;
++  int p[2];
++  long pid;
++
++  in = -1;
++  out = -1;
++  errdes = -1;
++  outname = (char *) orig_outname;
++  outname_allocated = 0;
++
++  /* Set IN.  */
++
++  if (obj->next_input_name != NULL)
++    {
++      /* We have to make sure that the previous process has completed
++	 before we try to read the file.  */
++      if (!pex_get_status_and_time (obj, 0, &errmsg, err))
++	goto error_exit;
++
++      in = obj->funcs->open_read (obj, obj->next_input_name,
++				  (flags & PEX_BINARY_INPUT) != 0);
++      if (in < 0)
++	{
++	  *err = errno;
++	  errmsg = "open temporary file";
++	  goto error_exit;
++	}
++      if (obj->next_input_name_allocated)
++	{
++	  free (obj->next_input_name);
++	  obj->next_input_name_allocated = 0;
++	}
++      obj->next_input_name = NULL;
++    }
++  else
++    {
++      in = obj->next_input;
++      if (in < 0)
++	{
++	  *err = 0;
++	  errmsg = "pipeline already complete";
++	  goto error_exit;
++	}
++    }
++
++  /* Set OUT and OBJ->NEXT_INPUT/OBJ->NEXT_INPUT_NAME.  */
++
++  if ((flags & PEX_LAST) != 0)
++    {
++      if (outname == NULL)
++	out = STDOUT_FILE_NO;
++      else if ((flags & PEX_SUFFIX) != 0)
++	{
++	  outname = concat (obj->tempbase, outname, NULL);
++	  outname_allocated = 1;
++	}
++      obj->next_input = -1;
++    }
++  else if ((obj->flags & PEX_USE_PIPES) == 0)
++    {
++      if (outname == NULL)
++	{
++	  if (obj->tempbase == NULL)
++	    {
++	      outname = make_temp_file (NULL);
++	      outname_allocated = 1;
++	    }
++	  else
++	    {
++	      int len = strlen (obj->tempbase);
++
++	      if (len >= 6
++		  && strcmp (obj->tempbase + len - 6, "XXXXXX") == 0)
++		outname = xstrdup (obj->tempbase);
++	      else
++		outname = concat (obj->tempbase, "XXXXXX", NULL);
++
++	      outname_allocated = 1;
++
++	      out = mkstemps (outname, 0);
++	      if (out < 0)
++		{
++		  *err = 0;
++		  errmsg = "could not create temporary output file";
++		  goto error_exit;
++		}
++
++	      /* This isn't obj->funcs->close because we got the
++		 descriptor from mkstemps, not from a function in
++		 obj->funcs.  Calling close here is just like what
++		 make_temp_file does.  */
++	      close (out);
++	      out = -1;
++	    }
++	}
++      else if ((flags & PEX_SUFFIX) != 0)
++	{
++	  if (obj->tempbase == NULL)
++	    outname = make_temp_file (outname);
++	  else
++	    outname = concat (obj->tempbase, outname, NULL);
++	  outname_allocated = 1;
++	}
++
++      if ((obj->flags & PEX_SAVE_TEMPS) == 0)
++	{
++	  pex_add_remove (obj, outname, outname_allocated);
++	  outname_allocated = 0;
++	}
++
++      if (!outname_allocated)
++	{
++	  obj->next_input_name = outname;
++	  obj->next_input_name_allocated = 0;
++	}
++      else
++	{
++	  obj->next_input_name = outname;
++	  outname_allocated = 0;
++	  obj->next_input_name_allocated = 1;
++	}
++    }
++  else
++    {
++      if (obj->funcs->pipe (obj, p, (flags & PEX_BINARY_OUTPUT) != 0) < 0)
++	{
++	  *err = errno;
++	  errmsg = "pipe";
++	  goto error_exit;
++	}
++
++      out = p[WRITE_PORT];
++      obj->next_input = p[READ_PORT];
++    }
++
++  if (out < 0)
++    {
++      out = obj->funcs->open_write (obj, outname,
++				    (flags & PEX_BINARY_OUTPUT) != 0);
++      if (out < 0)
++	{
++	  *err = errno;
++	  errmsg = "open temporary output file";
++	  goto error_exit;
++	}
++    }
++
++  if (outname_allocated)
++    {
++      free (outname);
++      outname_allocated = 0;
++    }
++
++  /* Set ERRDES.  */
++
++  if (errname == NULL)
++    errdes = STDERR_FILE_NO;
++  else
++    {
++      /* We assume that stderr is in text mode--it certainly shouldn't
++	 be controlled by PEX_BINARY_OUTPUT.  If necessary, we can add
++	 a PEX_BINARY_STDERR flag.  */
++      errdes = obj->funcs->open_write (obj, errname, 0);
++      if (errdes < 0)
++	{
++	  *err = errno;
++	  errmsg = "open error file";
++	  goto error_exit;
++	}
++    }
++
++  /* Run the program.  */
++
++  pid = obj->funcs->exec_child (obj, flags, executable, argv, in, out, errdes,
++				&errmsg, err);
++  if (pid < 0)
++    goto error_exit;
++
++  ++obj->count;
++  obj->children = xrealloc (obj->children, obj->count * sizeof (long));
++  obj->children[obj->count - 1] = pid;
++
++  return NULL;
++
++ error_exit:
++  if (in >= 0 && in != STDIN_FILE_NO)
++    obj->funcs->close (obj, in);
++  if (out >= 0 && out != STDOUT_FILE_NO)
++    obj->funcs->close (obj, out);
++  if (errdes >= 0 && errdes != STDERR_FILE_NO)
++    obj->funcs->close (obj, errdes);
++  if (outname_allocated)
++    free (outname);
++  return errmsg;
++}
++
++/* Return a FILE pointer for the output of the last program
++   executed.  */
++
++FILE *
++pex_read_output (struct pex_obj *obj, int binary)
++{
++  if (obj->next_input_name != NULL)
++    {
++      const char *errmsg;
++      int err;
++
++      /* We have to make sure that the process has completed before we
++	 try to read the file.  */
++      if (!pex_get_status_and_time (obj, 0, &errmsg, &err))
++	{
++	  errno = err;
++	  return NULL;
++	}
++
++      obj->read_output = fopen (obj->next_input_name, binary ? "rb" : "r");
++
++      if (obj->next_input_name_allocated)
++	{
++	  free (obj->next_input_name);
++	  obj->next_input_name_allocated = 0;
++	}
++      obj->next_input_name = NULL;
++    }
++  else
++    {
++      int o;
++
++      o = obj->next_input;
++      if (o < 0 || o == STDIN_FILE_NO)
++	return NULL;
++      obj->read_output = obj->funcs->fdopenr (obj, o, binary);
++      obj->next_input = -1;
++    }
++
++  return obj->read_output;
++}
++
++/* Get the exit status and, if requested, the resource time for all
++   the child processes.  Return 0 on failure, 1 on success.  */
++
++static int
++pex_get_status_and_time (struct pex_obj *obj, int done, const char **errmsg,
++			 int *err)
++{
++  int ret;
++  int i;
++
++  if (obj->number_waited == obj->count)
++    return 1;
++
++  obj->status = xrealloc (obj->status, obj->count * sizeof (int));
++  if ((obj->flags & PEX_RECORD_TIMES) != 0)
++    obj->time = xrealloc (obj->time, obj->count * sizeof (struct pex_time));
++
++  ret = 1;
++  for (i = obj->number_waited; i < obj->count; ++i)
++    {
++      if (obj->funcs->wait (obj, obj->children[i], &obj->status[i],
++			    obj->time == NULL ? NULL : &obj->time[i],
++			    done, errmsg, err) < 0)
++	ret = 0;
++    }
++  obj->number_waited = i;
++
++  return ret;
++}
++
++/* Get exit status of executed programs.  */
++
++int
++pex_get_status (struct pex_obj *obj, int count, int *vector)
++{
++  if (obj->status == NULL)
++    {
++      const char *errmsg;
++      int err;
++
++      if (!pex_get_status_and_time (obj, 0, &errmsg, &err))
++	return 0;
++    }
++
++  if (count > obj->count)
++    {
++      memset (vector + obj->count, 0, (count - obj->count) * sizeof (int));
++      count = obj->count;
++    }
++
++  memcpy (vector, obj->status, count * sizeof (int));
++
++  return 1;
++}
++
++/* Get process times of executed programs.  */
++
++int
++pex_get_times (struct pex_obj *obj, int count, struct pex_time *vector)
++{
++  if (obj->status == NULL)
++    {
++      const char *errmsg;
++      int err;
++
++      if (!pex_get_status_and_time (obj, 0, &errmsg, &err))
++	return 0;
++    }
++
++  if (obj->time == NULL)
++    return 0;
++
++  if (count > obj->count)
++    {
++      memset (vector + obj->count, 0,
++	      (count - obj->count) * sizeof (struct pex_time));
++      count = obj->count;
++    }
++
++  memcpy (vector, obj->time, count * sizeof (struct pex_time));
++
++  return 1;
++}
++
++/* Free a pex_obj structure.  */
++
++void
++pex_free (struct pex_obj *obj)
++{
++  if (obj->next_input >= 0 && obj->next_input != STDIN_FILE_NO)
++    obj->funcs->close (obj, obj->next_input);
++
++  /* If the caller forgot to wait for the children, we do it here, to
++     avoid zombies.  */
++  if (obj->status == NULL)
++    {
++      const char *errmsg;
++      int err;
++
++      obj->flags &= ~ PEX_RECORD_TIMES;
++      pex_get_status_and_time (obj, 1, &errmsg, &err);
++    }
++
++  if (obj->next_input_name_allocated)
++    free (obj->next_input_name);
++  if (obj->children != NULL)
++    free (obj->children);
++  if (obj->status != NULL)
++    free (obj->status);
++  if (obj->time != NULL)
++    free (obj->time);
++  if (obj->read_output != NULL)
++    fclose (obj->read_output);
++
++  if (obj->remove_count > 0)
++    {
++      int i;
++
++      for (i = 0; i < obj->remove_count; ++i)
++	{
++	  remove (obj->remove[i]);
++	  free (obj->remove[i]);
++	}
++      free (obj->remove);
++    }
++
++  if (obj->funcs->cleanup != NULL)
++    obj->funcs->cleanup (obj);
++
++  free (obj);
++}
+diff --git a/libiberty/pex-common.h b/libiberty/pex-common.h
+index df3c0f6519c3..c0b47fe348ed 100644
+--- a/libiberty/pex-common.h
++++ b/libiberty/pex-common.h
+@@ -24,6 +24,7 @@ Boston, MA 02111-1307, USA.  */
+ 
+ #include "config.h"
+ #include "libiberty.h"
++#include <stdio.h>
+ 
+ #define install_error_msg "installation problem, cannot exec `%s'"
+ 
+@@ -42,4 +43,87 @@ Boston, MA 02111-1307, USA.  */
+ /* value of `pipe': port index for writing.  */
+ #define WRITE_PORT 1
+ 
++/* The structure used by pex_init and friends.  */
++
++struct pex_obj
++{
++  /* Flags.  */
++  int flags;
++  /* Name of calling program, for error messages.  */
++  const char *pname;
++  /* Base name to use for temporary files.  */
++  const char *tempbase;
++  /* Pipe to use as stdin for next process.  */
++  int next_input;
++  /* File name to use as stdin for next process.  */
++  char *next_input_name;
++  /* Whether next_input_name was allocated using malloc.  */
++  int next_input_name_allocated;
++  /* Number of child processes.  */
++  int count;
++  /* PIDs of child processes; array allocated using maloc.  */
++  long *children;
++  /* Exit statuses of child processes; array allocated using malloc.  */
++  int *status;
++  /* Time used by child processes; array allocated using malloc.  */
++  struct pex_time *time;
++  /* Number of children we have already waited for.  */
++  int number_waited;
++  /* FILE created by pex_read_output.  */
++  FILE *read_output;
++  /* Number of temporary files to remove.  */
++  int remove_count;
++  /* List of temporary files to remove; array allocated using malloc
++     of strings allocated using malloc.  */
++  char **remove;
++  /* Pointers to system dependent functions.  */
++  const struct pex_funcs *funcs;
++  /* For use by system dependent code.  */
++  void *sysdep;
++};
++
++/* Functions passed to pex_run_common.  */
++
++struct pex_funcs
++{
++  /* Open file NAME for reading.  If BINARY is non-zero, open in
++     binary mode.  Return >= 0 on success, -1 on error.  */
++  int (*open_read) (struct pex_obj *, const char *name, int binary);
++  /* Open file NAME for writing.  If BINARY is non-zero, open in
++     binary mode.  Return >= 0 on success, -1 on error.  */
++  int (*open_write) (struct pex_obj *, const char *name, int binary);
++  /* Execute a child process.  FLAGS, EXECUTABLE, ARGV, ERR are from
++     pex_run.  IN, OUT, ERRDES are each a descriptor, from open_read,
++     open_write, or pipe, or they are one of STDIN_FILE_NO,
++     STDOUT_FILE_NO or STDERR_FILE_NO; if not STD*_FILE_NO, they
++     should be closed.  The function should handle the
++     PEX_STDERR_TO_STDOUT flag.  Return >= 0 on success, or -1 on
++     error and set *ERRMSG and *ERR.  */
++  long (*exec_child) (struct pex_obj *, int flags, const char *executable,
++		      char * const * argv, int in, int out, int errdes,
++		      const char **errmsg, int *err);
++  /* Close a descriptor.  Return 0 on success, -1 on error.  */
++  int (*close) (struct pex_obj *, int);
++  /* Wait for a child to complete, returning exit status in *STATUS
++     and time in *TIME (if it is not null).  CHILD is from fork.  DONE
++     is 1 if this is called via pex_free.  ERRMSG and ERR are as in
++     fork.  Return 0 on success, -1 on error.  */
++  int (*wait) (struct pex_obj *, long, int *status, struct pex_time *time,
++	       int done, const char **errmsg, int *err);
++  /* Create a pipe (only called if PEX_USE_PIPES is set) storing two
++     descriptin in *P.  If BINARY is non-zero, open in binary mode.
++     Return 0 on success, -1 on error.  */
++  int (*pipe) (struct pex_obj *, int *p, int binary);
++  /* Get a FILE pointer to read from a file descriptor (only called if
++     PEX_USE_PIPES is set).  If BINARY is non-zero, open in binary
++     mode.  Return pointer on success, NULL on error.  */
++  FILE * (*fdopenr) (struct pex_obj *, int fd, int binary);
++  /* Free any system dependent data associated with OBJ.  May be
++     NULL if there is nothing to do.  */
++  void (*cleanup) (struct pex_obj *);
++};
++
++extern struct pex_obj *pex_init_common (int, const char *, const char *,
++					const struct pex_funcs *);
++
+ #endif
+diff --git a/libiberty/pex-djgpp.c b/libiberty/pex-djgpp.c
+index fe5b80b37dc2..c15f576f79a2 100644
+--- a/libiberty/pex-djgpp.c
++++ b/libiberty/pex-djgpp.c
+@@ -1,6 +1,6 @@
+ /* Utilities to execute a program in a subprocess (possibly linked by pipes
+    with other subprocesses), and wait for it.  DJGPP specialization.
+-   Copyright (C) 1996, 1997, 1998, 1999, 2000, 2001, 2003
++   Copyright (C) 1996, 1997, 1998, 1999, 2000, 2001, 2003, 2005
+    Free Software Foundation, Inc.
+ 
+ This file is part of the libiberty library.
+@@ -38,59 +38,246 @@ extern int errno;
+ #define PWAIT_ERROR EINVAL
+ #endif
+ 
+-/* MSDOS doesn't multitask, but for the sake of a consistent interface
+-   the code behaves like it does.  pexecute runs the program, tucks the
+-   exit code away, and returns a "pid".  pwait must be called to fetch the
+-   exit code.  */
++static int pex_djgpp_open_read (struct pex_obj *, const char *, int);
++static int pex_djgpp_open_write (struct pex_obj *, const char *, int);
++static long pex_djgpp_exec_child (struct pex_obj *, int, const char *,
++				  char * const *, int, int, int,
++				  const char **, int *);
++static int pex_djgpp_close (struct pex_obj *, int);
++static int pex_djgpp_wait (struct pex_obj *, long, int *, struct pex_time *,
++			   int, const char **, int *);
+ 
+-/* For communicating information from pexecute to pwait.  */
+-static int last_pid = 0;
+-static int last_status = 0;
+-static int last_reaped = 0;
++/* The list of functions we pass to the common routines.  */
+ 
+-int
+-pexecute (const char *program, char * const *argv, const char *this_pname,
+-          const char *temp_base, char **errmsg_fmt,
+-          char **errmsg_arg, int flags)
++const struct pex_funcs funcs =
+ {
+-  int rc;
++  pex_djgpp_open_read,
++  pex_djgpp_open_write,
++  pex_djgpp_exec_child,
++  pex_djgpp_close,
++  pex_djgpp_wait,
++  NULL, /* pipe */
++  NULL, /* fdopenr */
++  NULL  /* cleanup */
++};
+ 
+-  last_pid++;
+-  if (last_pid < 0)
+-    last_pid = 1;
++/* Return a newly initialized pex_obj structure.  */
+ 
+-  if ((flags & PEXECUTE_ONE) != PEXECUTE_ONE)
+-    abort ();
++struct pex_obj *
++pex_init (int flags, const char *pname, const char *tempbase)
++{
++  /* DJGPP does not support pipes.  */
++  flags &= ~ PEX_USE_PIPES;
++  return pex_init_common (flags, pname, tempbase, funcs);
++}
+ 
+-  /* ??? What are the possible return values from spawnv?  */
+-  rc = (flags & PEXECUTE_SEARCH ? spawnvp : spawnv) (P_WAIT, program, argv);
++/* Open a file for reading.  */
+ 
+-  if (rc == -1)
+-    {
+-      *errmsg_fmt = install_error_msg;
+-      *errmsg_arg = (char *)program;
+-      return -1;
+-    }
++static int
++pex_djgpp_open_read (struct pex_obj *obj ATTRIBUTE_UNUSED,
++		     const char *name, int binary)
++{
++  return open (name, O_RDONLY | (binary ? O_BINARY : O_TEXT));
++}
++
++/* Open a file for writing.  */
++
++static int
++pex_djgpp_open_write (struct pex_obj *obj ATTRIBUTE_UNUSED,
++		      const char *name, int binary)
++{
++  /* Note that we can't use O_EXCL here because gcc may have already
++     created the temporary file via make_temp_file.  */
++  return open (name,
++	       (O_WRONLY | O_CREAT | O_TRUNC
++		| (binary ? O_BINARY : O_TEXT)),
++	       S_IRUSR | S_IWUSR);
++}
++
++/* Close a file.  */
+ 
+-  /* Tuck the status away for pwait, and return a "pid".  */
+-  last_status = rc << 8;
+-  return last_pid;
++static int
++pex_djgpp_close (struct pex_obj *obj ATTRIBUTE_UNUSED, int fd)
++{
++  return close (fd);
+ }
+ 
+-int
+-pwait (int pid, int *status, int flags)
++/* Execute a child.  */
++
++static long
++pex_djgpp_exec_child (struct pex_obj *obj, int flags, const char *executable,
++		      char * const * argv, int in, int out, int errdes,
++		      const char **errmsg, int *err)
+ {
+-  /* On MSDOS each pexecute must be followed by its associated pwait.  */
+-  if (pid != last_pid
+-      /* Called twice for the same child?  */
+-      || pid == last_reaped)
++  int org_in, org_out, org_errdes;
++  int status;
++  int *statuses;
++
++  org_in = -1;
++  org_out = -1;
++  org_errdes = -1;
++
++  if (in != STDIN_FILE_NO)
++    {
++      org_in = _dup (STDIN_FILE_NO);
++      if (org_in < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup";
++	  return -1;
++	}
++      if (_dup2 (in, STDIN_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (in) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_close";
++	  return -1;
++	}
++    }
++
++  if (out != STDOUT_FILE_NO)
++    {
++      org_out = _dup (STDOUT_FILE_NO);
++      if (org_out < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup";
++	  return -1;
++	}
++      if (_dup2 (out, STDOUT_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (out) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_close";
++	  return -1;
++	}
++    }
++
++  if (errdes != STDERR_FILE_NO
++      || (flags & PEX_STDERR_TO_STDOUT) != 0)
++    {
++      int e;
++
++      org_errdes = _dup (STDERR_FILE_NO);
++      if (org_errdes < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup";
++	  return -1;
++	}
++      if (_dup2 ((flags & PEX_STDERR_TO_STDOUT) != 0 ? STDOUT_FILE_NO : errdes,
++		 STDERR_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (errdes != STDERR_FILE_NO)
++	{
++	  if (_close (errdes) < 0)
++	    {
++	      *err = errno;
++	      *errmsg = "_close";
++	      return -1;
++	    }
++	}
++    }
++
++  status = (((flags & PEX_SEARCH) != 0 ? _spawnvp : _spawnv)
++	    (P_WAIT, program, (const char **) argv));
++
++  if (status == -1)
++    {
++      *err = errno;
++      *errmsg = ((flags & PEX_SEARCH) != 0) ? "_spawnvp" : "_spawnv";
++    }
++
++  if (in != STDIN_FILE_NO)
++    {
++      if (_dup2 (org_in, STDIN_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (org_in) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_close";
++	  return -1;
++	}
++    }
++
++  if (out != STDOUT_FILE_NO)
++    {
++      if (_dup2 (org_out, STDOUT_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (org_out) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_close";
++	  return -1;
++	}
++    }
++
++  if (errdes != STDERR_FILE_NO
++      || (flags & PEX_STDERR_TO_STDOUT) != 0)
+     {
+-      errno = PWAIT_ERROR;
+-      return -1;
++      if (_dup2 (org_errdes, STDERR_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (org_errdes) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_close";
++	  return -1;
++	}
+     }
+-  /* ??? Here's an opportunity to canonicalize the values in STATUS.
+-     Needed?  */
+-  *status = (last_status >> 8);
+-  last_reaped = last_pid;
+-  return last_pid;
++
++  /* Save the exit status for later.  When we are called, obj->count
++     is the number of children which have executed before this
++     one.  */
++  statuses = (int *) obj->sysdep;
++  statuses = xrealloc (statuses, (obj->count + 1) * sizeof (int));
++  statuses[obj->count] = status;
++  obj->sysdep = (void *) statuses;
++
++  return obj->count;
++}
++
++/* Wait for a child process to complete.  Actually the child process
++   has already completed, and we just need to return the exit
++   status.  */
++
++static int
++pex_djgpp_wait (struct pex_obj *obj, long pid, int *status,
++		struct pex_time *time, int done, const char **errmsg,
++		int *err)
++{
++  int *statuses;
++
++  if (time != NULL)
++    memset (time, 0, sizeof *time);
++
++  statuses = (int *) obj->sysdep;
++  *status = statuses[pid];
++
++  return 0;
+ }
+diff --git a/libiberty/pex-msdos.c b/libiberty/pex-msdos.c
+index f91e416a66f4..e2d76ee07a94 100644
+--- a/libiberty/pex-msdos.c
++++ b/libiberty/pex-msdos.c
+@@ -1,6 +1,6 @@
+ /* Utilities to execute a program in a subprocess (possibly linked by pipes
+    with other subprocesses), and wait for it.  Generic MSDOS specialization.
+-   Copyright (C) 1996, 1997, 1998, 1999, 2000, 2001, 2003
++   Copyright (C) 1996, 1997, 1998, 1999, 2000, 2001, 2003, 2005
+    Free Software Foundation, Inc.
+ 
+ This file is part of the libiberty library.
+@@ -36,105 +36,281 @@ extern int errno;
+ #include "safe-ctype.h"
+ #include <process.h>
+ 
+-/* MSDOS doesn't multitask, but for the sake of a consistent interface
+-   the code behaves like it does.  pexecute runs the program, tucks the
+-   exit code away, and returns a "pid".  pwait must be called to fetch the
+-   exit code.  */
++/* The structure we keep in obj->sysdep.  */
+ 
+-/* For communicating information from pexecute to pwait.  */
+-static int last_pid = 0;
+-static int last_status = 0;
+-static int last_reaped = 0;
++#define PEX_MSDOS_FILE_COUNT 3
+ 
+-int
+-pexecute (const char *program, char * const *argv, const char *this_pname,
+-          const char *temp_base, char **errmsg_fmt, char **errmsg_arg,
+-          int flags)
++#define PEX_MSDOS_FD_OFFSET 10
++
++struct pex_msdos
+ {
+-  int rc;
+-  char *scmd, *rf;
+-  FILE *argfile;
+-  int i, el = flags & PEXECUTE_SEARCH ? 4 : 0;
++  /* An array of file names.  We refer to these using file descriptors
++     of 10 + array index.  */
++  const char *files[PEX_MSDOS_FILE_COUNT];
++  /* Exit statuses of programs which have been run.  */
++  int *statuses;
++};
++
++static int pex_msdos_open (struct pex_obj *, const char *, int);
++static int pex_msdos_open (struct pex_obj *, const char *, int);
++static int pex_msdos_fdindex (struct pex_msdos *, int);
++static long pex_msdos_exec_child (struct pex_obj *, int, const char *,
++				  char * const *, int, int, int,
++				  const char **, int *);
++static int pex_msdos_close (struct pex_obj *, int);
++static int pex_msdos_wait (struct pex_obj *, long, int *, struct pex_time *,
++			   int, const char **, int *);
++static void pex_msdos_cleanup (struct pex_obj *);
++
++/* The list of functions we pass to the common routines.  */
++
++const struct pex_funcs funcs =
++{
++  pex_msdos_open,
++  pex_msdos_open,
++  pex_msdos_exec_child,
++  pex_msdos_close,
++  pex_msdos_wait,
++  NULL, /* pipe */
++  NULL, /* fdopenr */
++  pex_msdos_cleanup
++};
++
++/* Return a newly initialized pex_obj structure.  */
++
++struct pex_obj *
++pex_init (int flags, const char *pname, const char *tempbase)
++{
++  struct pex_obj *ret;
++  int i;
++
++  /* MSDOS does not support pipes.  */
++  flags &= ~ PEX_USE_PIPES;
+ 
+-  last_pid++;
+-  if (last_pid < 0)
+-    last_pid = 1;
++  ret = pex_init_common (flags, pname, tempbase, funcs);
+ 
+-  if ((flags & PEXECUTE_ONE) != PEXECUTE_ONE)
++  ret->sysdep = xmalloc (sizeof (struct pex_msdos));
++  for (i = 0; i < PEX_MSDOS_FILE_COUNT; ++i)
++    ret->files[i] = NULL;
++  ret->statuses = NULL;
++
++  return ret;
++}
++
++/* Open a file.  FIXME: We ignore the binary argument, since we have
++   no way to handle it.  */
++
++static int
++pex_msdos_open (struct pex_obj *obj, const char *name,
++		int binary ATTRIBUTE_UNUSED)
++{
++  struct pex_msdos *ms;
++  int i;
++
++  ms = (struct pex_msdos *) obj->sysdep;
++
++  for (i = 0; i < PEX_MSDOS_FILE_COUNT; ++i)
++    {
++      if (ms->files[i] == NULL)
++	{
++	  ms->files[i] = xstrdup (name);
++	  return i + PEX_MSDOS_FD_OFFSET;
++	}
++    }
++
++  abort ();
++}
++
++/* Get the index into msdos->files associated with an open file
++   descriptor.  */
++
++static int
++pex_msdos_fdindex (struct pex_msdos *ms, int fd)
++{
++  fd -= PEX_MSDOS_FD_OFFSET;
++  if (fd < 0 || fd >= PEX_MSDOS_FILE_COUNT || ms->files[fd] == NULL)
+     abort ();
++  return fd;
++}
++
++
++/* Close a file.  */
++
++static int
++pex_msdos_close (struct pex_obj *obj, int fd)
++{
++  struct pex_msdos *ms;
++  int fdinex;
++
++  ms = (struct pex_msdos *) obj->sysdep;
++  fdindex = pe_msdos_fdindex (ms, fd);
++  free (ms->files[fdindex]);
++  ms->files[fdindex] = NULL;
++}
++
++/* Execute a child.  */
++
++static long
++pex_msdos_exec_child (struct pex_obj *obj, int flags, const char *executable,
++		      char * const * argv, int in, int out,
++		      int errdes ATTRIBUTE_UNUSED, const char **errmsg,
++		      int *err)
++{
++  struct pex_msdos *ms;
++  char *temp_base;
++  int temp_base_allocated;
++  char *rf;
++  int inindex;
++  char *infile;
++  int outindex;
++  char *outfile;
++  char *scmd;
++  FILE *argfile;
++  int i;
++  int status;
++
++  ms = (struct pex_msdos *) obj->sysdep;
++
++  /* FIXME: I don't know how to redirect stderr, so we ignore ERRDES
++     and PEX_STDERR_TO_STDOUT.  */
++
++  temp_base = obj->temp_base;
++  if (temp_base != NULL)
++    temp_base_allocated = 0;
++  else
++    {
++      temp_base = choose_temp_base ();
++      temp_base_allocated = 1;
++    }
++
++  rf = concat (temp_base, ".gp", NULL);
++
++  if (temp_base_allocated)
++    free (temp_base);
++
++  if (in == STDIN_FILE_NO)
++    {
++      inindex = -1;
++      infile = "";
++    }
++  else
++    {
++      inindex = pex_msdos_fdindex (ms, in);
++      infile = ms->files[inindex];
++    }
++
++  if (out == STDOUT_FILE_NO)
++    {
++      outindex = -1;
++      outfile = "";
++    }
++  else
++    {
++      outindex = pex_msdos_fdindex (ms, out);
++      outfile = ms->files[outindex];
++    }
++
++  scmd = xmalloc (strlen (program)
++		  + ((flags & PEXECUTE_SEARCH) != 0 ? 4 : 0)
++		  + strlen (rf)
++		  + strlen (infile)
++		  + strlen (outfile)
++		  + 10);
++  sprintf (scmd, "%s%s @%s%s%s%s%s",
++	   program,
++	   (flags & PEXECUTE_SEARCH) != 0 ? ".exe" : "",
++	   rf,
++	   inindex != -1 ? " <" : "",
++	   infile,
++	   outindex != -1 ? " >" : "",
++	   outfile);
+ 
+-  if (temp_base == 0)
+-    temp_base = choose_temp_base ();
+-  scmd = (char *) xmalloc (strlen (program) + strlen (temp_base) + 6 + el);
+-  rf = scmd + strlen(program) + 2 + el;
+-  sprintf (scmd, "%s%s @%s.gp", program,
+-	   (flags & PEXECUTE_SEARCH ? ".exe" : ""), temp_base);
+   argfile = fopen (rf, "w");
+-  if (argfile == 0)
++  if (argfile == NULL)
+     {
+-      int errno_save = errno;
++      *err = errno;
+       free (scmd);
+-      errno = errno_save;
+-      *errmsg_fmt = "cannot open `%s.gp'";
+-      *errmsg_arg = temp_base;
++      free (rf);
++      *errmsg = "cannot open temporary command file";
+       return -1;
+     }
+ 
+-  for (i=1; argv[i]; i++)
++  for (i = 1; argv[i] != NULL; ++i)
+     {
+-      char *cp;
+-      for (cp = argv[i]; *cp; cp++)
++      char *p;
++
++      for (p = argv[i]; *p != '\0'; ++p)
+ 	{
+-	  if (*cp == '"' || *cp == '\'' || *cp == '\\' || ISSPACE (*cp))
+-	    fputc ('\\', argfile);
+-	  fputc (*cp, argfile);
++	  if (*p == '"' || *p == '\'' || *p == '\\' || ISSPACE (*p))
++	    putc ('\\', argfile);
++	  putc (*p, argfile);
+ 	}
+-      fputc ('\n', argfile);
++      putc ('\n', argfile);
+     }
+-  fclose (argfile);
+ 
+-  rc = system (scmd);
++  fclose (argfile);
+ 
+-  {
+-    int errno_save = errno;
+-    remove (rf);
+-    free (scmd);
+-    errno = errno_save;
+-  }
++  status = system (scmd);
+ 
+-  if (rc == -1)
++  if (status == -1)
+     {
+-      *errmsg_fmt = install_error_msg;
+-      *errmsg_arg = (char *)program;
++      *err = errno;
++      remove (rf);
++      free (scmd);
++      free (rf);
++      *errmsg = "system";
+       return -1;
+     }
+ 
+-  /* Tuck the status away for pwait, and return a "pid".  */
+-  last_status = rc << 8;
+-  return last_pid;
++  remove (rf);
++  free (scmd);
++  free (rf);
++
++  /* Save the exit status for later.  When we are called, obj->count
++     is the number of children which have executed before this
++     one.  */
++  ms->statuses = xrealloc (ms->statuses, (obj->count + 1) * sizeof (int));
++  ms->statuses[obj->count] = status;
++
++  return obj->count;
+ }
+ 
+-/* Use ECHILD if available, otherwise use EINVAL.  */
+-#ifdef ECHILD
+-#define PWAIT_ERROR ECHILD
+-#else
+-#define PWAIT_ERROR EINVAL
+-#endif
++/* Wait for a child process to complete.  Actually the child process
++   has already completed, and we just need to return the exit
++   status.  */
+ 
+-int
+-pwait (int pid, int *status, int flags)
++static int
++pex_msdos_wait (struct pex_obj *obj, long pid, int *status,
++		struct pex_time *time, int done ATTRIBUTE_UNUSED,
++		const char **errmsg ATTRIBUTE_UNUSED,
++		int *err ATTRIBUTE_UNUSED)
+ {
+-  /* On MSDOS each pexecute must be followed by its associated pwait.  */
+-  if (pid != last_pid
+-      /* Called twice for the same child?  */
+-      || pid == last_reaped)
+-    {
+-      errno = PWAIT_ERROR;
+-      return -1;
+-    }
+-  /* ??? Here's an opportunity to canonicalize the values in STATUS.
+-     Needed?  */
+-  *status = last_status;
+-  last_reaped = last_pid;
+-  return last_pid;
++  struct pex_msdos *ms;
++
++  ms = (struct pex_msdos *) obj->sysdep;
++
++  if (time != NULL)
++    memset (time, 0, sizeof *time);
++
++  *status = ms->statuses[pid];
++
++  return 0;
++}
++
++/* Clean up the pex_msdos structure.  */
++
++static void
++pex_msdos_cleanup (struct pex_obj  *obj)
++{
++  struct pex_msdos *ms;
++  int i;
++
++  ms = (struct pex_msdos *) obj->sysdep;
++  for (i = 0; i < PEX_MSDOS_FILE_COUNT; ++i)
++    if (msdos->files[i] != NULL)
++      free (msdos->files[i]);
++  if (msdos->statuses != NULL)
++    free (msdos->statuses);
++  free (msdos);
++  obj->sysdep = NULL;
+ }
+diff --git a/libiberty/pex-one.c b/libiberty/pex-one.c
+new file mode 100644
+index 000000000000..84f1bec070ff
+--- /dev/null
++++ b/libiberty/pex-one.c
+@@ -0,0 +1,43 @@
++/* Execute a program and wait for a result.
++   Copyright (C) 2005 Free Software Foundation, Inc.
++
++This file is part of the libiberty library.
++Libiberty is free software; you can redistribute it and/or
++modify it under the terms of the GNU Library General Public
++License as published by the Free Software Foundation; either
++version 2 of the License, or (at your option) any later version.
++
++Libiberty is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++Library General Public License for more details.
++
++You should have received a copy of the GNU Library General Public
++License along with libiberty; see the file COPYING.LIB.  If not,
++write to the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++Boston, MA 02111-1307, USA.  */
++
++#include "config.h"
++#include "libiberty.h"
++
++const char *
++pex_one (int flags, const char *executable, char * const *argv,
++	 const char *pname, const char *outname, const char *errname,
++	 int *status, int *err)
++{
++  struct pex_obj *obj;
++  const char *errmsg;
++
++  obj = pex_init (0, pname, NULL);
++  errmsg = pex_run (obj, flags, executable, argv, outname, errname, err);
++  if (errmsg == NULL)
++    {
++      if (!pex_get_status (obj, 1, status))
++	{
++	  *err = 0;
++	  errmsg = "pex_get_status failed";
++	}
++    }
++  pex_free (obj);
++  return errmsg;  
++}
+diff --git a/libiberty/pex-unix.c b/libiberty/pex-unix.c
+index 0c5f85c3528f..b9654fca9f81 100644
+--- a/libiberty/pex-unix.c
++++ b/libiberty/pex-unix.c
+@@ -20,30 +20,43 @@ License along with libiberty; see the file COPYING.LIB.  If not,
+ write to the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
+ Boston, MA 02111-1307, USA.  */
+ 
++#include "config.h"
++#include "libiberty.h"
+ #include "pex-common.h"
+ 
+ #include <stdio.h>
++#include <signal.h>
+ #include <errno.h>
+ #ifdef NEED_DECLARATION_ERRNO
+ extern int errno;
+ #endif
++#ifdef HAVE_STDLIB_H
++#include <stdlib.h>
++#endif
+ #ifdef HAVE_STRING_H
+ #include <string.h>
+ #endif
+ #ifdef HAVE_UNISTD_H
+ #include <unistd.h>
+ #endif
+-#ifdef HAVE_STDLIB_H
+-#include <stdlib.h>
++
++#include <sys/types.h>
++
++#ifdef HAVE_FCNTL_H
++#include <fcntl.h>
+ #endif
+ #ifdef HAVE_SYS_WAIT_H
+ #include <sys/wait.h>
+ #endif
+-
+-#ifndef HAVE_WAITPID
+-#define waitpid(pid, status, flags) wait(status)
++#ifdef HAVE_GETRUSAGE
++#include <sys/time.h>
++#include <sys/resource.h>
++#endif
++#ifdef HAVE_SYS_STAT_H
++#include <sys/stat.h>
+ #endif
+ 
++
+ #ifdef vfork /* Autoconf may define this to fork for us. */
+ # define VFORK_STRING "fork"
+ #else
+@@ -57,80 +70,300 @@ extern int errno;
+                lib$get_current_invo_context(decc$$get_vfork_jmpbuf()) : -1)
+ #endif /* VMS */
+ 
+-/* Execute a program, possibly setting up pipes to programs executed
+-   via other calls to this function.
+-
+-   This version of the function uses vfork.  In general vfork is
+-   similar to setjmp/longjmp, in that any variable which is modified by
+-   the child process has an indeterminate value in the parent process.
+-   We follow a safe approach here by not modifying any variables at
+-   all in the child process (with the possible exception of variables
+-   modified by xstrerror if exec fails, but this is unlikely to be
+-   detectable).
+-
+-   We work a little bit harder to avoid gcc warnings.  gcc will warn
+-   about any automatic variable which is live at the time of the
+-   vfork, which is non-volatile, and which is either set more than
+-   once or is an argument to the function.  This warning isn't quite
+-   right, since what we really care about is whether the variable is
+-   live at the time of the vfork and set afterward by the child
+-   process, but gcc only checks whether the variable is set more than
+-   once.  To avoid this warning, we ensure that any variable which is
+-   live at the time of the vfork (i.e., used after the vfork) is set
+-   exactly once and is not an argument, or is marked volatile.  */
+-
+-int
+-pexecute (const char *program, char * const *argv, const char *this_pname,
+-          const char *temp_base ATTRIBUTE_UNUSED,
+-          char **errmsg_fmt, char **errmsg_arg, int flagsarg)
+-{
+-  int pid;
+-  int pdes[2];
+-  int out;
+-  int input_desc, output_desc;
+-  int flags;
+-  /* We declare these to be volatile to avoid warnings from gcc about
+-     them being clobbered by vfork.  */
+-  volatile int retries, sleep_interval;
+-  /* Pipe waiting from last process, to be used as input for the next one.
+-     Value is STDIN_FILE_NO if no pipe is waiting
+-     (i.e. the next command is the first of a group).  */
+-  static int last_pipe_input;
+ 
+-  flags = flagsarg;
++/* File mode to use for private and world-readable files.  */
++
++#if defined (S_IRUSR) && defined (S_IWUSR) && defined (S_IRGRP) && defined (S_IWGRP) && defined (S_IROTH) && defined (S_IWOTH)
++#define PUBLIC_MODE  \
++    (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)
++#else
++#define PUBLIC_MODE 0666
++#endif
++
++/* Get the exit status of a particular process, and optionally get the
++   time that it took.  This is simple if we have wait4, slightly
++   harder if we have waitpid, and is a pain if we only have wait.  */
++
++static pid_t pex_wait (struct pex_obj *, pid_t, int *, struct pex_time *);
++
++#ifdef HAVE_WAIT4
++
++static pid_t
++pex_wait (struct pex_obj *obj ATTRIBUTE_UNUSED, pid_t pid, int *status,
++	  struct pex_time *time)
++{
++  pid_t ret;
++  struct rusage r;
++
++#ifdef HAVE_WAITPID
++  if (time == NULL)
++    return waitpid (pid, status, 0);
++#endif
++
++  ret = wait4 (pid, status, 0, &r);
++
++  if (time != NULL)
++    {
++      time->user_seconds = r.ru_utime.tv_sec;
++      time->user_microseconds= r.ru_utime.tv_usec;
++      time->system_seconds = r.ru_stime.tv_sec;
++      time->system_microseconds= r.ru_stime.tv_usec;
++    }
++
++  return ret;
++}
++
++#else /* ! defined (HAVE_WAIT4) */
++
++#ifdef HAVE_WAITPID
++
++#ifndef HAVE_GETRUSAGE
++
++static pid_t
++pex_wait (struct pex_obj *obj ATTRIBUTE_UNUSED, pid_t pid, int *status,
++	  struct pex_time *time)
++{
++  if (time != NULL)
++    memset (time, 0, sizeof (struct pex_time));
++  return waitpid (pid, status, 0);
++}
++
++#else /* defined (HAVE_GETRUSAGE) */
++
++static pid_t
++pex_wait (struct pex_obj *obj ATTRIBUTE_UNUSED, pid_t pid, int *status,
++	  struct pex_time *time)
++{
++  struct rusage r1, r2;
++  pid_t ret;
++
++  if (time == NULL)
++    return waitpid (pid, status, 0);
++
++  getrusage (RUSAGE_CHILDREN, &r1);
++
++  ret = waitpid (pid, status, 0);
++  if (ret < 0)
++    return ret;
++
++  getrusage (RUSAGE_CHILDREN, &r2);
++
++  time->user_seconds = r2.ru_utime.tv_sec - r1.ru_utime.tv_sec;
++  time->user_microseconds = r2.ru_utime.tv_usec - r1.ru_utime.tv_usec;
++  if (r2.ru_utime.tv_usec < r1.ru_utime.tv_usec)
++    {
++      --time->user_seconds;
++      time->user_microseconds += 1000000;
++    }
++
++  time->system_seconds = r2.ru_stime.tv_sec - r1.ru_stime.tv_sec;
++  time->system_microseconds = r2.ru_stime.tv_usec - r1.ru_stime.tv_usec;
++  if (r2.ru_stime.tv_usec < r1.ru_stime.tv_usec)
++    {
++      --time->system_seconds;
++      time->system_microseconds += 1000000;
++    }
+ 
+-  /* If this is the first process, initialize.  */
+-  if (flags & PEXECUTE_FIRST)
+-    last_pipe_input = STDIN_FILE_NO;
++  return ret;
++}
+ 
+-  input_desc = last_pipe_input;
++#endif /* defined (HAVE_GETRUSAGE) */
+ 
+-  /* If this isn't the last process, make a pipe for its output,
+-     and record it as waiting to be the input to the next process.  */
+-  if (! (flags & PEXECUTE_LAST))
++#else /* ! defined (HAVE_WAITPID) */
++
++struct status_list
++{
++  struct status_list *next;
++  pid_t pid;
++  int status;
++  struct pex_time time;
++};
++
++static pid_t
++pex_wait (struct pex_obj *obj, pid_t pid, int *status, struct pex_time *time)
++{
++  struct status_list **pp;
++
++  for (pp = (struct status_list **) &obj->sysdep;
++       *pp != NULL;
++       pp = &(*pp)->next)
+     {
+-      if (pipe (pdes) < 0)
++      if ((*pp)->pid == pid)
+ 	{
+-	  *errmsg_fmt = "pipe";
+-	  *errmsg_arg = NULL;
+-	  return -1;
++	  struct status_list *p;
++
++	  p = *pp;
++	  *status = p->status;
++	  if (time != NULL)
++	    *time = p->time;
++	  *pp = p->next;
++	  free (p);
++	  return pid;
+ 	}
+-      out = pdes[WRITE_PORT];
+-      last_pipe_input = pdes[READ_PORT];
+     }
+-  else
++
++  while (1)
+     {
+-      /* Last process.  */
+-      out = STDOUT_FILE_NO;
+-      last_pipe_input = STDIN_FILE_NO;
++      pid_t cpid;
++      struct status_list *psl;
++      struct pex_time pt;
++#ifdef HAVE_GETRUSAGE
++      struct rusage r1, r2;
++#endif
++
++      if (time != NULL)
++	{
++#ifdef HAVE_GETRUSAGE
++	  getrusage (RUSAGE_CHILDREN, &r1);
++#else
++	  memset (&pt, 0, sizeof (struct pex_time));
++#endif
++	}
++
++      cpid = wait (status);
++
++#ifdef HAVE_GETRUSAGE
++      if (time != NULL && cpid >= 0)
++	{
++	  getrusage (RUSAGE_CHILDREN, &r2);
++
++	  pt.user_seconds = r2.ru_utime.tv_sec - r1.ru_utime.tv_sec;
++	  pt.user_microseconds = r2.ru_utime.tv_usec - r1.ru_utime.tv_usec;
++	  if (pt.user_microseconds < 0)
++	    {
++	      --pt.user_seconds;
++	      pt.user_microseconds += 1000000;
++	    }
++
++	  pt.system_seconds = r2.ru_stime.tv_sec - r1.ru_stime.tv_sec;
++	  pt.system_microseconds = r2.ru_stime.tv_usec - r1.ru_stime.tv_usec;
++	  if (pt.system_microseconds < 0)
++	    {
++	      --pt.system_seconds;
++	      pt.system_microseconds += 1000000;
++	    }
++	}
++#endif
++
++      if (cpid < 0 || cpid == pid)
++	{
++	  if (time != NULL)
++	    *time = pt;
++	  return cpid;
++	}
++
++      psl = xmalloc (sizeof (struct status_list));
++      psl->pid = cpid;
++      psl->status = *status;
++      if (time != NULL)
++	psl->time = pt;
++      psl->next = (struct status_list *) obj->sysdep;
++      obj->sysdep = (void *) psl;
+     }
++}
++
++#endif /* ! defined (HAVE_WAITPID) */
++#endif /* ! defined (HAVE_WAIT4) */
++
++static void pex_child_error (struct pex_obj *, const char *, const char *, int)
++     ATTRIBUTE_NORETURN;
++static int pex_unix_open_read (struct pex_obj *, const char *, int);
++static int pex_unix_open_write (struct pex_obj *, const char *, int);
++static long pex_unix_exec_child (struct pex_obj *, int, const char *,
++				 char * const *, int, int, int,
++				 const char **, int *);
++static int pex_unix_close (struct pex_obj *, int);
++static int pex_unix_wait (struct pex_obj *, long, int *, struct pex_time *,
++			  int, const char **, int *);
++static int pex_unix_pipe (struct pex_obj *, int *, int);
++static FILE *pex_unix_fdopenr (struct pex_obj *, int, int);
++static void pex_unix_cleanup (struct pex_obj *);
++
++/* The list of functions we pass to the common routines.  */
++
++const struct pex_funcs funcs =
++{
++  pex_unix_open_read,
++  pex_unix_open_write,
++  pex_unix_exec_child,
++  pex_unix_close,
++  pex_unix_wait,
++  pex_unix_pipe,
++  pex_unix_fdopenr,
++  pex_unix_cleanup
++};
++
++/* Return a newly initialized pex_obj structure.  */
++
++struct pex_obj *
++pex_init (int flags, const char *pname, const char *tempbase)
++{
++  return pex_init_common (flags, pname, tempbase, &funcs);
++}
++
++/* Open a file for reading.  */
++
++static int
++pex_unix_open_read (struct pex_obj *obj ATTRIBUTE_UNUSED, const char *name,
++		    int binary ATTRIBUTE_UNUSED)
++{
++  return open (name, O_RDONLY);
++}
++
++/* Open a file for writing.  */
++
++static int
++pex_unix_open_write (struct pex_obj *obj ATTRIBUTE_UNUSED, const char *name,
++		     int binary ATTRIBUTE_UNUSED)
++{
++  /* Note that we can't use O_EXCL here because gcc may have already
++     created the temporary file via make_temp_file.  */
++  return open (name, O_WRONLY | O_CREAT | O_TRUNC, PUBLIC_MODE);
++}
+ 
+-  output_desc = out;
++/* Close a file.  */
++
++static int
++pex_unix_close (struct pex_obj *obj ATTRIBUTE_UNUSED, int fd)
++{
++  return close (fd);
++}
++
++/* Report an error from a child process.  We don't use stdio routines,
++   because we might be here due to a vfork call.  */
++
++static void
++pex_child_error (struct pex_obj *obj, const char *executable,
++		 const char *errmsg, int err)
++{
++#define writeerr(s) write (STDERR_FILE_NO, s, strlen (s))
++  writeerr (obj->pname);
++  writeerr (": error trying to exec '");
++  writeerr (executable);
++  writeerr ("': ");
++  writeerr (errmsg);
++  writeerr (": ");
++  writeerr (xstrerror (err));
++  writeerr ("\n");
++  _exit (-1);
++}
++
++/* Execute a child.  */
++
++static long
++pex_unix_exec_child (struct pex_obj *obj, int flags, const char *executable,
++		     char * const * argv, int in, int out, int errdes,
++		     const char **errmsg, int *err)
++{
++  pid_t pid;
++  /* We declare these to be volatile to avoid warnings from gcc about
++     them being clobbered by vfork.  */
++  volatile int sleep_interval;
++  volatile int retries;
+ 
+-  /* Fork a subprocess; wait and retry if it fails.  */
+   sleep_interval = 1;
+   pid = -1;
+-  for (retries = 0; retries < 4; retries++)
++  for (retries = 0; retries < 4; ++retries)
+     {
+       pid = vfork ();
+       if (pid >= 0)
+@@ -142,66 +375,139 @@ pexecute (const char *program, char * const *argv, const char *this_pname,
+   switch (pid)
+     {
+     case -1:
+-      *errmsg_fmt = "fork";
+-      *errmsg_arg = NULL;
++      *err = errno;
++      *errmsg = VFORK_STRING;
+       return -1;
+ 
+-    case 0: /* child */
+-      /* Move the input and output pipes into place, if necessary.  */
+-      if (input_desc != STDIN_FILE_NO)
++    case 0:
++      /* Child process.  */
++      if (in != STDIN_FILE_NO)
+ 	{
+-	  close (STDIN_FILE_NO);
+-	  dup (input_desc);
+-	  close (input_desc);
++	  if (dup2 (in, STDIN_FILE_NO) < 0)
++	    pex_child_error (obj, executable, "dup2", errno);
++	  if (close (in) < 0)
++	    pex_child_error (obj, executable, "close", errno);
+ 	}
+-      if (output_desc != STDOUT_FILE_NO)
++      if (out != STDOUT_FILE_NO)
+ 	{
+-	  close (STDOUT_FILE_NO);
+-	  dup (output_desc);
+-	  close (output_desc);
++	  if (dup2 (out, STDOUT_FILE_NO) < 0)
++	    pex_child_error (obj, executable, "dup2", errno);
++	  if (close (out) < 0)
++	    pex_child_error (obj, executable, "close", errno);
++	}
++      if (errdes != STDERR_FILE_NO)
++	{
++	  if (dup2 (errdes, STDERR_FILE_NO) < 0)
++	    pex_child_error (obj, executable, "dup2", errno);
++	  if (close (errdes) < 0)
++	    pex_child_error (obj, executable, "close", errno);
++	}
++      if ((flags & PEX_STDERR_TO_STDOUT) != 0)
++	{
++	  if (dup2 (STDOUT_FILE_NO, STDERR_FILE_NO) < 0)
++	    pex_child_error (obj, executable, "dup2", errno);
++	}
++      if ((flags & PEX_SEARCH) != 0)
++	{
++	  execvp (executable, argv);
++	  pex_child_error (obj, executable, "execvp", errno);
+ 	}
+-
+-      /* Close the parent's descs that aren't wanted here.  */
+-      if (last_pipe_input != STDIN_FILE_NO)
+-	close (last_pipe_input);
+-
+-      /* Exec the program.  */
+-      if (flags & PEXECUTE_SEARCH)
+-	execvp (program, argv);
+       else
+-	execv (program, argv);
++	{
++	  execv (executable, argv);
++	  pex_child_error (obj, executable, "execv", errno);
++	}
+ 
+-      /* We don't want to call fprintf after vfork.  */
+-#define writeerr(s) write (STDERR_FILE_NO, s, strlen (s))
+-      writeerr (this_pname);
+-      writeerr (": ");
+-      writeerr ("installation problem, cannot exec '");
+-      writeerr (program);
+-      writeerr ("': ");
+-      writeerr (xstrerror (errno));
+-      writeerr ("\n");
+-      _exit (-1);
+       /* NOTREACHED */
+-      return 0;
++      return -1;
+ 
+     default:
+-      /* In the parent, after forking.
+-	 Close the descriptors that we made for this child.  */
+-      if (input_desc != STDIN_FILE_NO)
+-	close (input_desc);
+-      if (output_desc != STDOUT_FILE_NO)
+-	close (output_desc);
+-
+-      /* Return child's process number.  */
+-      return pid;
++      /* Parent process.  */
++      if (in != STDIN_FILE_NO)
++	{
++	  if (close (in) < 0)
++	    {
++	      *err = errno;
++	      *errmsg = "close";
++	      return -1;
++	    }
++	}
++      if (out != STDOUT_FILE_NO)
++	{
++	  if (close (out) < 0)
++	    {
++	      *err = errno;
++	      *errmsg = "close";
++	      return -1;
++	    }
++	}
++      if (errdes != STDERR_FILE_NO)
++	{
++	  if (close (errdes) < 0)
++	    {
++	      *err = errno;
++	      *errmsg = "close";
++	      return -1;
++	    }
++	}
++
++      return (long) pid;
+     }
+ }
+ 
+-int
+-pwait (int pid, int *status, int flags ATTRIBUTE_UNUSED)
++/* Wait for a child process to complete.  */
++
++static int
++pex_unix_wait (struct pex_obj *obj, long pid, int *status,
++	       struct pex_time *time, int done, const char **errmsg,
++	       int *err)
+ {
+-  /* ??? Here's an opportunity to canonicalize the values in STATUS.
+-     Needed?  */
+-  pid = waitpid (pid, status, 0);
+-  return pid;
++  /* If we are cleaning up when the caller didn't retrieve process
++     status for some reason, encourage the process to go away.  */
++  if (done)
++    kill (pid, SIGTERM);
++
++  if (pex_wait (obj, pid, status, time) < 0)
++    {
++      *err = errno;
++      *errmsg = "wait";
++      return -1;
++    }
++
++  return 0;
++}
++
++/* Create a pipe.  */
++
++static int
++pex_unix_pipe (struct pex_obj *obj ATTRIBUTE_UNUSED, int *p,
++	       int binary ATTRIBUTE_UNUSED)
++{
++  return pipe (p);
++}
++
++/* Get a FILE pointer to read from a file descriptor.  */
++
++static FILE *
++pex_unix_fdopenr (struct pex_obj *obj ATTRIBUTE_UNUSED, int fd,
++		  int binary ATTRIBUTE_UNUSED)
++{
++  return fdopen (fd, "r");
++}
++
++static void
++pex_unix_cleanup (struct pex_obj *obj ATTRIBUTE_UNUSED)
++{
++#if !defined (HAVE_WAIT4) && !defined (HAVE_WAITPID)
++  while (obj->sysdep != NULL)
++    {
++      struct status_list *this;
++      struct status_list *next;
++
++      this = (struct status_list *) obj->sysdep;
++      next = this->next;
++      free (this);
++      obj->sysdep = (void *) next;
++    }
++#endif
+ }
+diff --git a/libiberty/pex-win32.c b/libiberty/pex-win32.c
+index 8d3cb9731dbb..2a3607df7923 100644
+--- a/libiberty/pex-win32.c
++++ b/libiberty/pex-win32.c
+@@ -21,6 +21,9 @@ Boston, MA 02111-1307, USA.  */
+ 
+ #include "pex-common.h"
+ 
++#ifdef HAVE_STDLIB_H
++#include <stdlib.h>
++#endif
+ #ifdef HAVE_STRING_H
+ #include <string.h>
+ #endif
+@@ -35,6 +38,7 @@ Boston, MA 02111-1307, USA.  */
+ #include <io.h>
+ #include <fcntl.h>
+ #include <signal.h>
++#include <sys/stat.h>
+ 
+ /* mingw32 headers may not define the following.  */
+ 
+@@ -53,27 +57,49 @@ Boston, MA 02111-1307, USA.  */
+    to remove the outermost set of double quotes from all arguments.  */
+ 
+ static const char * const *
+-fix_argv (char **argvec)
++fix_argv (char * const *argvec)
+ {
++  char **argv;
+   int i;
+-  char * command0 = argvec[0];
++  char *command0;
++
++  /* See whether we need to change anything.  */
++  for (command0 = argvec[0]; *command0 != '\0'; command0++)
++    if (*command0 == '/')
++      break;
++  if (*command0 == '\0')
++    {
++      for (i = 1; argvec[i] != NULL; i++)
++	if (strpbrk (argvec[i], "\" \t") != NULL)
++	  break;
++
++      if (argvec[i] == NULL)
++	return (const char * const *) argvec;
++    }
++
++  for (i = 0; argvec[i] != NULL; i++)
++    ;
++  argv = xmalloc ((i + 1) * sizeof (char *));
++  for (i = 0; argvec[i] != NULL; i++)
++    argv[i] = xstrdup (argvec[i]);
++  argv[i] = NULL;
+ 
+   /* Ensure that the executable pathname uses Win32 backslashes. This
+-     is not necessary on NT, but on W9x, forward slashes causes failure
+-     of spawn* and exec* functions (and probably any function that
+-     calls CreateProcess) *iff* the executable pathname (argvec[0]) is
+-     a quoted string.  And quoting is necessary in case a pathname
+-     contains  embedded white space. You can't win.  */
+-  for (; *command0 != '\0'; command0++)
++     is not necessary on NT, but on W9x, forward slashes causes
++     failure of spawn* and exec* functions (and probably any function
++     that calls CreateProcess) *iff* the executable pathname (argv[0])
++     is a quoted string.  And quoting is necessary in case a pathname
++     contains embedded white space.  You can't win.  */
++  for (command0 = argv[0]; *command0 != '\0'; command0++)
+     if (*command0 == '/')
+       *command0 = '\\';
+- 
+-  for (i = 1; argvec[i] != 0; i++)
++
++  for (i = 1; argv[i] != 0; i++)
+     {
+       int len, j;
+       char *temp, *newtemp;
+ 
+-      temp = argvec[i];
++      temp = argv[i];
+       len = strlen (temp);
+       for (j = 0; j < len; j++)
+         {
+@@ -90,17 +116,21 @@ fix_argv (char **argvec)
+             }
+         }
+ 
+-        argvec[i] = temp;
+-      }
++      if (argv[i] != temp)
++	{
++	  free (argv[i]);
++	  argv[i] = temp;
++	}
++    }
+ 
+-  for (i = 0; argvec[i] != 0; i++)
++  for (i = 0; argv[i] != 0; i++)
+     {
+-      if (strpbrk (argvec[i], " \t"))
++      if (strpbrk (argv[i], " \t"))
+         {
+ 	  int len, trailing_backslash;
+ 	  char *temp;
+ 
+-	  len = strlen (argvec[i]);
++	  len = strlen (argv[i]);
+ 	  trailing_backslash = 0;
+ 
+ 	  /* There is an added complication when an arg with embedded white
+@@ -111,8 +141,8 @@ fix_argv (char **argvec)
+ 	     We handle this case by escaping the trailing backslash, provided
+ 	     it was not escaped in the first place.  */
+ 	  if (len > 1 
+-	      && argvec[i][len-1] == '\\' 
+-	      && argvec[i][len-2] != '\\')
++	      && argv[i][len-1] == '\\' 
++	      && argv[i][len-2] != '\\')
+ 	    {
+ 	      trailing_backslash = 1;
+ 	      ++len;			/* to escape the final backslash. */
+@@ -122,127 +152,289 @@ fix_argv (char **argvec)
+ 
+ 	  temp = xmalloc (len + 1);
+ 	  temp[0] = '"';
+-	  strcpy (temp + 1, argvec[i]);
++	  strcpy (temp + 1, argv[i]);
+ 	  if (trailing_backslash)
+-	    temp[len-2] = '\\';
+-	  temp[len-1] = '"';
++	    temp[len - 2] = '\\';
++	  temp[len - 1] = '"';
+ 	  temp[len] = '\0';
+ 
+-	  argvec[i] = temp;
++	  free (argv[i]);
++	  argv[i] = temp;
+ 	}
+     }
+ 
+-  return (const char * const *) argvec;
++  return (const char * const *) argv;
+ }
+ 
+-/* Win32 supports pipes */
+-int
+-pexecute (const char *program, char * const *argv,
+-          const char *this_pname ATTRIBUTE_UNUSED,
+-          const char *temp_base ATTRIBUTE_UNUSED,
+-          char **errmsg_fmt, char **errmsg_arg, int flags)
++static int pex_win32_open_read (struct pex_obj *, const char *, int);
++static int pex_win32_open_write (struct pex_obj *, const char *, int);
++static long pex_win32_exec_child (struct pex_obj *, int, const char *,
++				  char * const *, int, int, int,
++				  const char **, int *);
++static int pex_win32_close (struct pex_obj *, int);
++static int pex_win32_wait (struct pex_obj *, long, int *,
++			   struct pex_time *, int, const char **, int *);
++static int pex_win32_pipe (struct pex_obj *, int *, int);
++static FILE *pex_win32_fdopenr (struct pex_obj *, int, int);
++
++/* The list of functions we pass to the common routines.  */
++
++const struct pex_funcs funcs =
+ {
+-  int pid;
+-  int pdes[2];
+-  int org_stdin = -1;
+-  int org_stdout = -1;
+-  int input_desc, output_desc;
+-
+-  /* Pipe waiting from last process, to be used as input for the next one.
+-     Value is STDIN_FILE_NO if no pipe is waiting
+-     (i.e. the next command is the first of a group).  */
+-  static int last_pipe_input;
+-
+-  /* If this is the first process, initialize.  */
+-  if (flags & PEXECUTE_FIRST)
+-    last_pipe_input = STDIN_FILE_NO;
+-
+-  input_desc = last_pipe_input;
+-
+-  /* If this isn't the last process, make a pipe for its output,
+-     and record it as waiting to be the input to the next process.  */
+-  if (! (flags & PEXECUTE_LAST))
++  pex_win32_open_read,
++  pex_win32_open_write,
++  pex_win32_exec_child,
++  pex_win32_close,
++  pex_win32_wait,
++  pex_win32_pipe,
++  pex_win32_fdopenr,
++  NULL /* cleanup */
++};
++
++/* Return a newly initialized pex_obj structure.  */
++
++struct pex_obj *
++pex_init (int flags, const char *pname, const char *tempbase)
++{
++  return pex_init_common (flags, pname, tempbase, &funcs);
++}
++
++/* Open a file for reading.  */
++
++static int
++pex_win32_open_read (struct pex_obj *obj ATTRIBUTE_UNUSED, const char *name,
++		     int binary)
++{
++  return _open (name, _O_RDONLY | (binary ? _O_BINARY : _O_TEXT));
++}
++
++/* Open a file for writing.  */
++
++static int
++pex_win32_open_write (struct pex_obj *obj ATTRIBUTE_UNUSED, const char *name,
++		      int binary)
++{
++  /* Note that we can't use O_EXCL here because gcc may have already
++     created the temporary file via make_temp_file.  */
++  return _open (name,
++		(_O_WRONLY | _O_CREAT | _O_TRUNC
++		 | (binary ? _O_BINARY : _O_TEXT)),
++		_S_IREAD | _S_IWRITE);
++}
++
++/* Close a file.  */
++
++static int
++pex_win32_close (struct pex_obj *obj ATTRIBUTE_UNUSED, int fd)
++{
++  return _close (fd);
++}
++
++/* Execute a child.  */
++
++static long
++pex_win32_exec_child (struct pex_obj *obj ATTRIBUTE_UNUSED, int flags,
++		      const char *executable, char * const * argv,
++		      int in, int out, int errdes, const char **errmsg,
++		      int *err)
++{
++  int org_in, org_out, org_errdes;
++  long pid;
++
++  org_in = -1;
++  org_out = -1;
++  org_errdes = -1;
++
++  if (in != STDIN_FILE_NO)
+     {
+-      if (_pipe (pdes, 256, O_BINARY) < 0)
++      org_in = _dup (STDIN_FILE_NO);
++      if (org_in < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup";
++	  return -1;
++	}
++      if (_dup2 (in, STDIN_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (in) < 0)
+ 	{
+-	  *errmsg_fmt = "pipe";
+-	  *errmsg_arg = NULL;
++	  *err = errno;
++	  *errmsg = "_close";
+ 	  return -1;
+ 	}
+-      output_desc = pdes[WRITE_PORT];
+-      last_pipe_input = pdes[READ_PORT];
+     }
+-  else
++
++  if (out != STDOUT_FILE_NO)
+     {
+-      /* Last process.  */
+-      output_desc = STDOUT_FILE_NO;
+-      last_pipe_input = STDIN_FILE_NO;
++      org_out = _dup (STDOUT_FILE_NO);
++      if (org_out < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup";
++	  return -1;
++	}
++      if (_dup2 (out, STDOUT_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (out) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_close";
++	  return -1;
++	}
+     }
+ 
+-  if (input_desc != STDIN_FILE_NO)
++  if (errdes != STDERR_FILE_NO
++      || (flags & PEX_STDERR_TO_STDOUT) != 0)
+     {
+-      org_stdin = dup (STDIN_FILE_NO);
+-      dup2 (input_desc, STDIN_FILE_NO);
+-      close (input_desc); 
++      org_errdes = _dup (STDERR_FILE_NO);
++      if (org_errdes < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup";
++	  return -1;
++	}
++      if (_dup2 ((flags & PEX_STDERR_TO_STDOUT) != 0 ? STDOUT_FILE_NO : errdes,
++		 STDERR_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (errdes != STDERR_FILE_NO)
++	{
++	  if (_close (errdes) < 0)
++	    {
++	      *err = errno;
++	      *errmsg = "_close";
++	      return -1;
++	    }
++	}
+     }
+ 
+-  if (output_desc != STDOUT_FILE_NO)
++  pid = (((flags & PEX_SEARCH) != 0 ? _spawnvp : _spawnv)
++	 (_P_NOWAIT, executable, fix_argv (argv)));
++
++  if (pid == -1)
+     {
+-      org_stdout = dup (STDOUT_FILE_NO);
+-      dup2 (output_desc, STDOUT_FILE_NO);
+-      close (output_desc);
++      *err = errno;
++      *errmsg = ((flags & PEX_SEARCH) != 0) ? "_spawnvp" : "_spawnv";
+     }
+ 
+-  pid = (flags & PEXECUTE_SEARCH ? _spawnvp : _spawnv)
+-    (_P_NOWAIT, program, fix_argv(argv));
+-
+-  if (input_desc != STDIN_FILE_NO)
++  if (in != STDIN_FILE_NO)
+     {
+-      dup2 (org_stdin, STDIN_FILE_NO);
+-      close (org_stdin);
++      if (_dup2 (org_in, STDIN_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (org_in) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_close";
++	  return -1;
++	}
+     }
+ 
+-  if (output_desc != STDOUT_FILE_NO)
++  if (out != STDOUT_FILE_NO)
+     {
+-      dup2 (org_stdout, STDOUT_FILE_NO);
+-      close (org_stdout);
++      if (_dup2 (org_out, STDOUT_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (org_out) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_close";
++	  return -1;
++	}
+     }
+ 
+-  if (pid == -1)
++  if (errdes != STDERR_FILE_NO
++      || (flags & PEX_STDERR_TO_STDOUT) != 0)
+     {
+-      *errmsg_fmt = install_error_msg;
+-      *errmsg_arg = (char*) program;
+-      return -1;
++      if (_dup2 (org_errdes, STDERR_FILE_NO) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_dup2";
++	  return -1;
++	}
++      if (_close (org_errdes) < 0)
++	{
++	  *err = errno;
++	  *errmsg = "_close";
++	  return -1;
++	}
+     }
+ 
+   return pid;
+ }
+ 
+-/* MS CRTDLL doesn't return enough information in status to decide if the
+-   child exited due to a signal or not, rather it simply returns an
+-   integer with the exit code of the child; eg., if the child exited with 
+-   an abort() call and didn't have a handler for SIGABRT, it simply returns
+-   with status = 3. We fix the status code to conform to the usual WIF*
+-   macros. Note that WIFSIGNALED will never be true under CRTDLL. */
+-
+-int
+-pwait (int pid, int *status, int flags ATTRIBUTE_UNUSED)
++/* Wait for a child process to complete.  MS CRTDLL doesn't return
++   enough information in status to decide if the child exited due to a
++   signal or not, rather it simply returns an integer with the exit
++   code of the child; eg., if the child exited with an abort() call
++   and didn't have a handler for SIGABRT, it simply returns with
++   status == 3.  We fix the status code to conform to the usual WIF*
++   macros.  Note that WIFSIGNALED will never be true under CRTDLL. */
++
++static int
++pex_win32_wait (struct pex_obj *obj ATTRIBUTE_UNUSED, long pid,
++		int *status, struct pex_time *time, int done ATTRIBUTE_UNUSED,
++		const char **errmsg, int *err)
+ {
+   int termstat;
+ 
+-  pid = _cwait (&termstat, pid, WAIT_CHILD);
++  if (time != NULL)
++    memset (time, 0, sizeof *time);
++
++  /* FIXME: If done is non-zero, we should probably try to kill the
++     process.  */
++
++  if (_cwait (&termstat, pid, WAIT_CHILD) < 0)
++    {
++      *err = errno;
++      *errmsg = "_cwait";
++      return -1;
++    }
+ 
+-  /* ??? Here's an opportunity to canonicalize the values in STATUS.
+-     Needed?  */
++  /* cwait returns the child process exit code in termstat.  A value
++     of 3 indicates that the child caught a signal, but not which one.
++     Since only SIGABRT, SIGFPE and SIGINT do anything, we report
++     SIGABRT.  */
+ 
+-  /* cwait returns the child process exit code in termstat.
+-     A value of 3 indicates that the child caught a signal, but not
+-     which one.  Since only SIGABRT, SIGFPE and SIGINT do anything, we
+-     report SIGABRT.  */
+   if (termstat == 3)
+     *status = SIGABRT;
+   else
+-    *status = (((termstat) & 0xff) << 8);
++    *status = ((termstat & 0xff) << 8);
+ 
+-  return pid;
++  return 0;
++}
++
++/* Create a pipe.  */
++
++static int
++pex_win32_pipe (struct pex_obj *obj ATTRIBUTE_UNUSED, int *p,
++		int binary)
++{
++  return _pipe (p, 256, binary ? _O_BINARY : _O_TEXT);
++}
++
++/* Get a FILE pointer to read from a file descriptor.  */
++
++static FILE *
++pex_win32_fdopenr (struct pex_obj *obj ATTRIBUTE_UNUSED, int fd,
++		   int binary)
++{
++  return fdopen (fd, binary ? "rb" : "r");
+ }
+diff --git a/libiberty/pexecute.c b/libiberty/pexecute.c
+new file mode 100644
+index 000000000000..df061107cf3b
+--- /dev/null
++++ b/libiberty/pexecute.c
+@@ -0,0 +1,121 @@
++/* Utilities to execute a program in a subprocess (possibly linked by pipes
++   with other subprocesses), and wait for it.
++   Copyright (C) 2004 Free Software Foundation, Inc.
++
++This file is part of the libiberty library.
++Libiberty is free software; you can redistribute it and/or
++modify it under the terms of the GNU Library General Public
++License as published by the Free Software Foundation; either
++version 2 of the License, or (at your option) any later version.
++
++Libiberty is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++Library General Public License for more details.
++
++You should have received a copy of the GNU Library General Public
++License along with libiberty; see the file COPYING.LIB.  If not,
++write to the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++Boston, MA 02111-1307, USA.  */
++
++/* pexecute is an old routine.  This implementation uses the newer
++   pex_init/pex_run/pex_get_status/pex_free routines.  Don't use
++   pexecute in new code.  Use the newer routines instead.  */
++
++#include "config.h"
++#include "libiberty.h"
++
++#ifdef HAVE_STDLIB_H
++#include <stdlib.h>
++#endif
++
++/* We only permit a single pexecute chain to execute at a time.  This
++   was always true anyhow, though it wasn't documented.  */
++
++static struct pex_obj *pex;
++static int idx;
++
++int
++pexecute (const char *program, char * const *argv, const char *pname,
++	  const char *temp_base, char **errmsg_fmt, char **errmsg_arg,
++	  int flags)
++{
++  const char *errmsg;
++  int err;
++
++  if ((flags & PEXECUTE_FIRST) != 0)
++    {
++      if (pex != NULL)
++	{
++	  *errmsg_fmt = "pexecute already in progress";
++	  *errmsg_arg = NULL;
++	  return -1;
++	}
++      pex = pex_init (PEX_USE_PIPES, pname, temp_base);
++      idx = 0;
++    }
++  else
++    {
++      if (pex == NULL)
++	{
++	  *errmsg_fmt = "pexecute not in progress";
++	  *errmsg_arg = NULL;
++	  return -1;
++	}
++    }
++
++  errmsg = pex_run (pex,
++		    (((flags & PEXECUTE_LAST) != 0 ? PEX_LAST : 0)
++		     | ((flags & PEXECUTE_SEARCH) != 0 ? PEX_SEARCH : 0)),
++		    program, argv, NULL, NULL, &err);
++  if (errmsg != NULL)
++    {
++      *errmsg_fmt = (char *) errmsg;
++      *errmsg_arg = NULL;
++      return -1;
++    }
++
++  /* Instead of a PID, we just return a one-based index into the
++     status values.  We avoid zero just because the old pexecute would
++     never return it.  */
++  return ++idx;
++}
++
++int
++pwait (int pid, int *status, int flags ATTRIBUTE_UNUSED)
++{
++  /* The PID returned by pexecute is one-based.  */
++  --pid;
++
++  if (pex == NULL || pid < 0 || pid >= idx)
++    return -1;
++
++  if (pid == 0 && idx == 1)
++    {
++      if (!pex_get_status (pex, 1, status))
++	return -1;
++    }
++  else
++    {
++      int *vector;
++
++      vector = xmalloc (idx * sizeof (int));
++      if (!pex_get_status (pex, idx, vector))
++	return -1;
++      *status = vector[pid];
++      free (vector);
++    }
++
++  /* Assume that we are done after the caller has retrieved the last
++     exit status.  The original implementation did not require that
++     the exit statuses be retrieved in order, but this implementation
++     does.  */
++  if (pid + 1 == idx)
++    {
++      pex_free (pex);
++      pex = NULL;
++      idx = 0;
++    }
++
++  return pid + 1;
++}
+diff --git a/libiberty/pexecute.txh b/libiberty/pexecute.txh
+index 269f031cc727..c06d55cd315c 100644
+--- a/libiberty/pexecute.txh
++++ b/libiberty/pexecute.txh
+@@ -1,63 +1,185 @@
+-@deftypefn Extension int pexecute (const char *@var{program}, char * const *@var{argv}, const char *@var{this_pname}, const char *@var{temp_base}, char **@var{errmsg_fmt}, char **@var{errmsg_arg}, int flags)
++@deftypefn Extension struct pex_obj *pex_init (int @var{flags}, const char *@var{pname}, const char *@var{tempbase})
+ 
+-Executes a program.
++Prepare to execute one or more programs, with standard output of each
++program fed to standard input of the next.  This is a system
++independent interface to execute a pipeline.
+ 
+-@var{program} and @var{argv} are the arguments to
+-@code{execv}/@code{execvp}.
++@var{flags} is a bitwise combination of the following:
+ 
+-@var{this_pname} is name of the calling program (i.e., @code{argv[0]}).
++@table @code
+ 
+-@var{temp_base} is the path name, sans suffix, of a temporary file to
+-use if needed.  This is currently only needed for MS-DOS ports that
+-don't use @code{go32} (do any still exist?).  Ports that don't need it
+-can pass @code{NULL}.
++@vindex PEX_RECORD_TIMES
++@item PEX_RECORD_TIMES
++Record subprocess times if possible.
+ 
+-(@code{@var{flags} & PEXECUTE_SEARCH}) is non-zero if @env{PATH}
+-should be searched (??? It's not clear that GCC passes this flag
+-correctly).  (@code{@var{flags} & PEXECUTE_FIRST}) is nonzero for the
+-first process in chain.  (@code{@var{flags} & PEXECUTE_FIRST}) is
+-nonzero for the last process in chain.  The first/last flags could be
+-simplified to only mark the last of a chain of processes but that
+-requires the caller to always mark the last one (and not give up
+-early if some error occurs).  It's more robust to require the caller
+-to mark both ends of the chain.
++@vindex PEX_USE_PIPES
++@item PEX_USE_PIPES
++Use pipes for communication between processes, if possible.
+ 
+-The result is the pid on systems like Unix where we
+-@code{fork}/@code{exec} and on systems like WIN32 and OS/2 where we
+-use @code{spawn}.  It is up to the caller to wait for the child.
++@vindex PEX_SAVE_TEMPS
++@item PEX_SAVE_TEMPS
++Don't delete temporary files used for communication between
++processes.
+ 
+-The result is the @code{WEXITSTATUS} on systems like MS-DOS where we
+-@code{spawn} and wait for the child here.
++@end table
+ 
+-Upon failure, @var{errmsg_fmt} and @var{errmsg_arg} are set to the
+-text of the error message with an optional argument (if not needed,
+-@var{errmsg_arg} is set to @code{NULL}), and @minus{}1 is returned.
+-@code{errno} is available to the caller to use.
++@var{pname} is the name of program to be executed, used in error
++messages.  @var{tempbase} is a base name to use for any required
++temporary files; it may be @code{NULL} to use a randomly chosen name.
+ 
+ @end deftypefn
+ 
+-@deftypefn Extension int pwait (int @var{pid}, int *@var{status}, int @var{flags})
++@deftypefn Extension const char *pex_run (struct pex_obj *@var{obj}, int @var{flags}, const char *@var{executable}, char * const *@var{argv}, const char *@var{outname}, const char *@var{errname}, int *@var{err})
++
++Execute one program in a pipeline.  On success this returns
++@code{NULL}.  On failure it returns an error message, a statically
++allocated string.
++
++@var{obj} is returned by a previous call to @code{pex_init}.
++
++@var{flags} is a bitwise combination of the following:
++
++@table @code
++
++@vindex PEX_LAST
++@item PEX_LAST
++This must be set on the last program in the pipeline.  In particular,
++it should be set when executing a single program.  The standard output
++of the program will be sent to @var{outname}, or, if @var{outname} is
++@code{NULL}, to the standard output of the calling program.  This
++should not be set if you want to call @code{pex_read_output}
++(described below).  After a call to @code{pex_run} with this bit set,
++@var{pex_run} may no longer be called with the same @var{obj}.
++
++@vindex PEX_SEARCH
++@item PEX_SEARCH
++Search for the program using the user's executable search path.
++
++@vindex PEX_SUFFIX
++@item PEX_SUFFIX
++@var{outname} is a suffix.  See the description of @var{outname},
++below.
++
++@vindex PEX_STDERR_TO_STDOUT
++@item PEX_STDERR_TO_STDOUT
++Send the program's standard error to standard output, if possible.
++
++@vindex PEX_BINARY_INPUT
++@vindex PEX_BINARY_OUTPUT
++@item PEX_BINARY_INPUT
++@itemx PEX_BINARY_OUTPUT
++The standard input (output) of the program should be read (written) in
++binary mode rather than text mode.  These flags are ignored on systems
++which do not distinguish binary mode and text mode, such as Unix.  For
++proper behavior these flags should match appropriately--a call to
++@code{pex_run} using @code{PEX_BINARY_OUTPUT} should be followed by a
++call using @code{PEX_BINARY_INPUT}.
++@end table
++
++@var{executable} is the program to execute.  @var{argv} is the set of
++arguments to pass to the program; normally @code{@var{argv}[0]} will
++be a copy of @var{executable}.
++
++@var{outname} is used to set the name of the file to use for standard
++output.  There are two cases in which no output file will be used: 1)
++if @code{PEX_LAST} is not set in @var{flags}, and @code{PEX_USE_PIPES}
++was set in the call to @code{pex_init}, and the system supports pipes;
++2) if @code{PEX_LAST} is set in @var{flags}, and @var{outname} is
++@code{NULL}.  Otherwise the code will use a file to hold standard
++output.  If @code{PEX_LAST} is not set, this file is considered to be
++a temporary file, and it will be removed when no longer needed, unless
++@code{PEX_SAVE_TEMPS} was set in the call to @code{pex_init}.
++
++There are two cases to consider when setting the name of the file to
++hold standard output.
++
++First case: @code{PEX_SUFFIX} is set in @var{flags}.  In this case
++@var{outname} may not be @code{NULL}.  If the @var{tempbase} parameter
++to @code{pex_init} was not @code{NULL}, then the output file name is
++the concatenation of @var{tempbase} and @var{outname}.  If
++@var{tempbase} was @code{NULL}, then the output file name is a random
++file name ending in @var{outname}.
++
++Second case: @code{PEX_SUFFIX} was not set in @var{flags}.  In this
++case, if @var{outname} is not @code{NULL}, it is used as the output
++file name.  If @var{outname} is @code{NULL}, and @var{tempbase} was
++not NULL, the output file name is randomly chosen using
++@var{tempbase}.  Otherwise the output file name is chosen completely
++at random.
++
++@var{errname} is the file name to use for standard error output.  If
++it is @code{NULL}, standard error is the same as the caller.
++Otherwise, standard error is written to the named file.
++
++On an error return, the code sets @code{*@var{err}} to an @code{errno}
++value, or to 0 if there is no relevant @code{errno}.
++
++@end deftypefn
++
++@deftypefn Extension FILE * pex_read_output (struct pex_obj *@var{obj}, int @var{binary})
++
++Returns a @code{FILE} pointer which may be used to read the standard
++output of the last program in the pipeline.  When this is used,
++@code{PEX_LAST} should not be used in a call to @code{pex_run}.  After
++this is called, @code{pex_run} may no longer be called with the same
++@var{obj}.  @var{binary} should be non-zero if the file should be
++opened in binary mode.  Don't call @code{fclose} on the returned file;
++it will be closed by @code{pex_free}.
++
++@end deftypefn
++
++@deftypefn Extension int pex_get_status (struct pex_obj *@var{obj}, int @var{count}, int *@var{vector})
++
++Returns the exit status of all programs run using @var{obj}.
++@var{count} is the number of results expected.  The results will be
++placed into @var{vector}.  The results are in the order of the calls
++to @code{pex_run}.  Returns 0 on error, 1 on success.
++
++@end deftypefn
++
++@deftypefn Extension int pex_get_times (struct pex_obj *@var{obj}, int @var{count}, struct pex_time *@var{vector})
+ 
+-Waits for a program started by @code{pexecute} to finish.
++Returns the process execution times of all programs run using
++@var{obj}.  @var{count} is the number of results expected.  The
++results will be placed into @var{vector}.  The results are in the
++order of the calls to @code{pex_run}.  Returns 0 on error, 1 on
++success.
+ 
+-@var{pid} is the process id of the task to wait for. @var{status} is
+-the `status' argument to wait. @var{flags} is currently unused
+-(allows future enhancement without breaking upward compatibility).
+-Pass 0 for now.
++@code{struct pex_time} has the following fields: @code{user_seconds},
++@code{user_microseconds}, @code{system_seconds},
++@code{system_microseconds}.  On systems which do not support reporting
++process times, all the fields will be set to @code{0}.
+ 
+-The result is the pid of the child reaped, or -1 for failure
+-(@code{errno} says why).
++@end deftypefn
++
++@deftypefn Extension void pex_free (struct pex_obj @var{obj})
+ 
+-On systems that don't support waiting for a particular child,
+-@var{pid} is ignored.  On systems like MS-DOS that don't really
+-multitask @code{pwait} is just a mechanism to provide a consistent
+-interface for the caller.
++Clean up and free all data associated with @var{obj}.
+ 
+ @end deftypefn
+ 
+-@undocumented pfinish
++@deftypefn Extension const char *pex_one (int @var{flags}, const char *@var{executable}, char * const *@var{argv}, const char *@var{pname}, const char *@var{outname}, const char *@var{errname}, int *@var{status}, int *@var{err})
++
++An interface to @code{pex_init} to permit the easy execution of a
++single program.  The return value and most of the parameters are as
++for a call to @code{pex_run}.  @var{flags} is restricted to a
++combination of @code{PEX_SEARCH}, @code{PEX_STDERR_TO_STDOUT}, and
++@code{PEX_BINARY_OUTPUT}.  @var{outname} is interpreted as if
++@code{PEX_LAST} were set.  On a successful return, *@var{status} will
++be set to the exit status of the program.
++
++@end deftypefn
++
++@deftypefn Extension int pexecute (const char *@var{program}, char * const *@var{argv}, const char *@var{this_pname}, const char *@var{temp_base}, char **@var{errmsg_fmt}, char **@var{errmsg_arg}, int flags)
+ 
+-pfinish: finish generation of script
++This is the old interface to execute one or more programs.  It is
++still supported for compatibility purposes, but is no longer
++documented.
+ 
+-pfinish is necessary for systems like MPW where a script is generated
+-that runs the requested programs.
++@end deftypefn
++
++@deftypefn Extension int pwait (int @var{pid}, int *@var{status}, int @var{flags})
++
++Another part of the old execution interface.
++
++@end deftypefn
+diff --git a/libiberty/testsuite/Makefile.in b/libiberty/testsuite/Makefile.in
+index 6f2a4fe4b398..e15f6fa191ac 100644
+--- a/libiberty/testsuite/Makefile.in
++++ b/libiberty/testsuite/Makefile.in
+@@ -42,17 +42,28 @@ INCDIR=$(srcdir)/../$(MULTISRCTOP)../include
+ 
+ all:
+ 
++# CHECK is set to "really_check" or the empty string by configure.
+ check: @CHECK@
+ 
++really-check: check-cplus-dem check-pexecute
++
+ # Run some tests of the demangler.
+ check-cplus-dem: test-demangle $(srcdir)/demangle-expected
+ 	./test-demangle < $(srcdir)/demangle-expected
+ 
++# Check the pexecute code.
++check-pexecute: test-pexecute
++	./test-pexecute
++
+ TEST_COMPILE = $(CC) @DEFS@ $(LIBCFLAGS) -I.. -I$(INCDIR) $(HDEFINES)
+ test-demangle: $(srcdir)/test-demangle.c ../libiberty.a
+ 	$(TEST_COMPILE) -o test-demangle \
+ 		$(srcdir)/test-demangle.c ../libiberty.a
+ 
++test-pexecute: $(srcdir)/test-pexecute.c ../libiberty.a
++	$(TEST_COMPILE) -DHAVE_CONFIG_H -I.. -o test-pexecute \
++		$(srcdir)/test-pexecute.c ../libiberty.a
++
+ # Standard (either GNU or Cygnus) rules we don't use.
+ info install-info clean-info dvi install etags tags installcheck:
+ 
+diff --git a/libiberty/testsuite/test-pexecute.c b/libiberty/testsuite/test-pexecute.c
+new file mode 100644
+index 000000000000..c67bcefb8f68
+--- /dev/null
++++ b/libiberty/testsuite/test-pexecute.c
+@@ -0,0 +1,521 @@
++/* Pexecute test program,
++   Copyright (C) 2005 Free Software Foundation, Inc.
++   Written by Ian Lance Taylor <ian@airs.com>.
++
++   This file is part of GNU libiberty.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; either version 2 of the License, or
++   (at your option) any later version.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA. 
++*/
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++#include "ansidecl.h"
++#include "libiberty.h"
++#include <stdio.h>
++#include <signal.h>
++#include <errno.h>
++#ifdef HAVE_STRING_H
++#include <string.h>
++#endif
++#include <sys/types.h>
++#ifdef HAVE_STDLIB_H
++#include <stdlib.h>
++#endif
++#ifdef HAVE_UNISTD_H
++#include <unistd.h>
++#endif
++#ifdef HAVE_SYS_WAIT_H
++#include <sys/wait.h>
++#endif
++#ifdef HAVE_SYS_TIME_H
++#include <sys/time.h>
++#endif
++#ifdef HAVE_SYS_RESOURCE_H
++#include <sys/resource.h>
++#endif
++
++#ifndef WIFSIGNALED
++#define WIFSIGNALED(S) (((S) & 0xff) != 0 && ((S) & 0xff) != 0x7f)
++#endif
++#ifndef WTERMSIG
++#define WTERMSIG(S) ((S) & 0x7f)
++#endif
++#ifndef WIFEXITED
++#define WIFEXITED(S) (((S) & 0xff) == 0)
++#endif
++#ifndef WEXITSTATUS
++#define WEXITSTATUS(S) (((S) & 0xff00) >> 8)
++#endif
++#ifndef WSTOPSIG
++#define WSTOPSIG WEXITSTATUS
++#endif
++#ifndef WCOREDUMP
++#define WCOREDUMP(S) ((S) & WCOREFLG)
++#endif
++#ifndef WCOREFLG
++#define WCOREFLG 0200
++#endif
++
++#ifndef EXIT_SUCCESS
++#define EXIT_SUCCESS 0
++#endif
++
++#ifndef EXIT_FAILURE
++#define EXIT_FAILURE 1
++#endif
++
++/* When this program is run with no arguments, it runs some tests of
++   the libiberty pexecute functions.  As a test program, it simply
++   invokes itself with various arguments.
++
++   argv[1]:
++     *empty string*      Run tests, exit with success status
++     exit                Exit success
++     error               Exit error
++     abort               Abort
++     echo                Echo remaining arguments, exit success
++     echoerr             Echo next arg to stdout, next to stderr, repeat
++     copy                Copy stdin to stdout
++     write               Write stdin to file named in next argument
++*/
++
++static void fatal_error (int, const char *, int) ATTRIBUTE_NORETURN;
++static void error (int, const char *);
++static void check_line (int, FILE *, const char *);
++static void do_cmd (int, char **) ATTRIBUTE_NORETURN;
++
++/* The number of errors we have seen.  */
++
++static int error_count;
++
++/* Print a fatal error and exit.  LINE is the line number where we
++   detected the error, ERRMSG is the error message to print, and ERR
++   is 0 or an errno value to print.  */
++
++static void
++fatal_error (int line, const char *errmsg, int err)
++{
++  fprintf (stderr, "test-pexecute:%d: %s", line, errmsg);
++  if (errno != 0)
++    fprintf (stderr, ": %s", xstrerror (err));
++  fprintf (stderr, "\n");
++  exit (EXIT_FAILURE);
++}
++
++#define FATAL_ERROR(ERRMSG, ERR) fatal_error (__LINE__, ERRMSG, ERR)
++
++/* Print an error message and bump the error count.  LINE is the line
++   number where we detected the error, ERRMSG is the error to
++   print.  */
++
++static void
++error (int line, const char *errmsg)
++{
++  fprintf (stderr, "test-pexecute:%d: %s\n", line, errmsg);
++  ++error_count;
++}
++
++#define ERROR(ERRMSG) error (__LINE__, ERRMSG)
++
++/* Check a line in a file.  */
++
++static void
++check_line (int line, FILE *e, const char *str)
++{
++  const char *p;
++  int c;
++  char buf[1000];
++
++  p = str;
++  while (1)
++    {
++      c = getc (e);
++
++      if (*p == '\0')
++	{
++	  if (c != '\n')
++	    {
++	      snprintf (buf, sizeof buf, "got '%c' when expecting newline", c);
++	      fatal_error (line, buf, 0);
++	    }
++	  c = getc (e);
++	  if (c != EOF)
++	    {
++	      snprintf (buf, sizeof buf, "got '%c' when expecting EOF", c);
++	      fatal_error (line, buf, 0);
++	    }
++	  return;
++	}
++
++      if (c != *p)
++	{
++	  snprintf (buf, sizeof buf, "expected '%c', got '%c'", *p, c);
++	  fatal_error (line, buf, 0);
++	}
++
++      ++p;
++    }
++}
++
++#define CHECK_LINE(E, STR) check_line (__LINE__, E, STR)
++
++/* Main function for the pexecute tester.  Run the tests.  */
++
++int
++main (int argc, char **argv)
++{
++  int trace;
++  struct pex_obj *test_pex_tmp;
++  int test_pex_status;
++  FILE *test_pex_file;
++  struct pex_obj *pex1;
++  char *subargv[10];
++  int status;
++  FILE *e;
++  int statuses[10];
++
++  trace = 0;
++  if (argc > 1 && strcmp (argv[1], "-t") == 0)
++    {
++      trace = 1;
++      --argc;
++      ++argv;
++    }
++
++  if (argc > 1)
++    do_cmd (argc, argv);
++
++#define TEST_PEX_INIT(FLAGS, TEMPBASE)					\
++  (((test_pex_tmp = pex_init (FLAGS, "test-pexecute", TEMPBASE))	\
++    != NULL)								\
++   ? test_pex_tmp							\
++   : (FATAL_ERROR ("pex_init failed", 0), NULL))
++
++#define TEST_PEX_RUN(PEXOBJ, FLAGS, EXECUTABLE, ARGV, OUTNAME, ERRNAME)	\
++  do									\
++    {									\
++      int err;								\
++      if (trace)							\
++	fprintf (stderr, "Line %d: running %s %s\n",			\
++		 __LINE__, EXECUTABLE, ARGV[0]);			\
++      const char *pex_run_err = pex_run (PEXOBJ, FLAGS, EXECUTABLE,	\
++					 ARGV, OUTNAME, ERRNAME, &err);	\
++      if (pex_run_err != NULL)						\
++	FATAL_ERROR (pex_run_err, err);					\
++    }									\
++  while (0)
++
++#define TEST_PEX_GET_STATUS_1(PEXOBJ)					\
++  (pex_get_status (PEXOBJ, 1, &test_pex_status)				\
++   ? test_pex_status							\
++   : (FATAL_ERROR ("pex_get_status failed", errno), 1))
++
++#define TEST_PEX_GET_STATUS(PEXOBJ, COUNT, VECTOR)			\
++  do									\
++    {									\
++      if (!pex_get_status (PEXOBJ, COUNT, VECTOR))			\
++	FATAL_ERROR ("pex_get_status failed", errno);			\
++    }									\
++  while (0)
++
++#define TEST_PEX_READ_OUTPUT(PEXOBJ)					\
++  ((test_pex_file = pex_read_output (PEXOBJ, 0)) != NULL		\
++   ? test_pex_file							\
++   : (FATAL_ERROR ("pex_read_output failed", errno), NULL))
++
++  remove ("temp.x");
++  remove ("temp.y");
++
++  memset (subargv, 0, sizeof subargv);
++
++  subargv[0] = "./test-pexecute";
++
++  pex1 = TEST_PEX_INIT (PEX_USE_PIPES, NULL);
++  subargv[1] = "exit";
++  subargv[2] = NULL;
++  TEST_PEX_RUN (pex1, PEX_LAST, "./test-pexecute", subargv, NULL, NULL);
++  status = TEST_PEX_GET_STATUS_1 (pex1);
++  if (!WIFEXITED (status) || WEXITSTATUS (status) != EXIT_SUCCESS)
++    ERROR ("exit failed");
++  pex_free (pex1);
++
++  pex1 = TEST_PEX_INIT (PEX_USE_PIPES, NULL);
++  subargv[1] = "error";
++  subargv[2] = NULL;
++  TEST_PEX_RUN (pex1, PEX_LAST, "./test-pexecute", subargv, NULL, NULL);
++  status = TEST_PEX_GET_STATUS_1 (pex1);
++  if (!WIFEXITED (status) || WEXITSTATUS (status) != EXIT_FAILURE)
++    ERROR ("error test failed");
++  pex_free (pex1);
++
++  /* We redirect stderr to a file to avoid an error message which is
++     printed on mingw32 when the child calls abort.  */
++  pex1 = TEST_PEX_INIT (PEX_USE_PIPES, NULL);
++  subargv[1] = "abort";
++  subargv[2] = NULL;
++  TEST_PEX_RUN (pex1, PEX_LAST, "./test-pexecute", subargv, NULL, "temp.z");
++  status = TEST_PEX_GET_STATUS_1 (pex1);
++  if (!WIFSIGNALED (status) || WTERMSIG (status) != SIGABRT)
++    ERROR ("abort failed");
++  pex_free (pex1);
++  remove ("temp.z");
++
++  pex1 = TEST_PEX_INIT (PEX_USE_PIPES, "temp");
++  subargv[1] = "echo";
++  subargv[2] = "foo";
++  subargv[3] = NULL;
++  TEST_PEX_RUN (pex1, 0, "./test-pexecute", subargv, NULL, NULL);
++  e = TEST_PEX_READ_OUTPUT (pex1);
++  CHECK_LINE (e, "foo");
++  if (TEST_PEX_GET_STATUS_1 (pex1) != 0)
++    ERROR ("echo exit status failed");
++  pex_free (pex1);
++
++  pex1 = TEST_PEX_INIT (PEX_USE_PIPES, "temp");
++  subargv[1] = "echo";
++  subargv[2] = "bar";
++  subargv[3] = NULL;
++  TEST_PEX_RUN (pex1, PEX_SUFFIX, "./test-pexecute", subargv, ".x", NULL);
++  subargv[1] = "copy";
++  subargv[2] = NULL;
++  TEST_PEX_RUN (pex1, PEX_SUFFIX, "./test-pexecute", subargv, ".y", NULL);
++  e = TEST_PEX_READ_OUTPUT (pex1);
++  CHECK_LINE (e, "bar");
++  TEST_PEX_GET_STATUS (pex1, 2, statuses);
++  if (!WIFEXITED (statuses[0]) || WEXITSTATUS (statuses[0]) != EXIT_SUCCESS
++      || !WIFEXITED (statuses[1]) || WEXITSTATUS (statuses[1]) != EXIT_SUCCESS)
++    ERROR ("copy exit status failed");
++  pex_free (pex1);
++  if (fopen ("temp.x", "r") != NULL || fopen ("temp.y", "r") != NULL)
++    ERROR ("temporary files exist");
++
++  pex1 = TEST_PEX_INIT (0, "temp");
++  subargv[1] = "echo";
++  subargv[2] = "bar";
++  subargv[3] = NULL;
++  TEST_PEX_RUN (pex1, PEX_SUFFIX, "./test-pexecute", subargv, ".x", NULL);
++  subargv[1] = "copy";
++  subargv[2] = NULL;
++  TEST_PEX_RUN (pex1, PEX_SUFFIX, "./test-pexecute", subargv, ".y", NULL);
++  e = TEST_PEX_READ_OUTPUT (pex1);
++  CHECK_LINE (e, "bar");
++  TEST_PEX_GET_STATUS (pex1, 2, statuses);
++  if (!WIFEXITED (statuses[0]) || WEXITSTATUS (statuses[0]) != EXIT_SUCCESS
++      || !WIFEXITED (statuses[1]) || WEXITSTATUS (statuses[1]) != EXIT_SUCCESS)
++    ERROR ("copy exit status failed");
++  pex_free (pex1);
++  if (fopen ("temp.x", "r") != NULL || fopen ("temp.y", "r") != NULL)
++    ERROR ("temporary files exist");
++
++  pex1 = TEST_PEX_INIT (PEX_SAVE_TEMPS, "temp");
++  subargv[1] = "echo";
++  subargv[2] = "quux";
++  subargv[3] = NULL;
++  TEST_PEX_RUN (pex1, PEX_SUFFIX, "./test-pexecute", subargv, ".x", NULL);
++  subargv[1] = "copy";
++  subargv[2] = NULL;
++  TEST_PEX_RUN (pex1, PEX_SUFFIX, "./test-pexecute", subargv, ".y", NULL);
++  e = TEST_PEX_READ_OUTPUT (pex1);
++  CHECK_LINE (e, "quux");
++  TEST_PEX_GET_STATUS (pex1, 2, statuses);
++  if (!WIFEXITED (statuses[0]) || WEXITSTATUS (statuses[0]) != EXIT_SUCCESS
++      || !WIFEXITED (statuses[1]) || WEXITSTATUS (statuses[1]) != EXIT_SUCCESS)
++    ERROR ("copy temp exit status failed");
++  e = fopen ("temp.x", "r");
++  if (e == NULL)
++    FATAL_ERROR ("fopen temp.x failed in copy temp", errno);
++  CHECK_LINE (e, "quux");
++  fclose (e);
++  e = fopen ("temp.y", "r");
++  if (e == NULL)
++    FATAL_ERROR ("fopen temp.y failed in copy temp", errno);
++  CHECK_LINE (e, "quux");
++  fclose (e);
++  pex_free (pex1);
++  remove ("temp.x");
++  remove ("temp.y");
++
++  pex1 = TEST_PEX_INIT (PEX_USE_PIPES, "temp");
++  subargv[1] = "echoerr";
++  subargv[2] = "one";
++  subargv[3] = "two";
++  subargv[4] = NULL;
++  TEST_PEX_RUN (pex1, PEX_SUFFIX, "./test-pexecute", subargv, ".x", "temp2.x");
++  subargv[1] = "write";
++  subargv[2] = "temp2.y";
++  subargv[3] = NULL;
++  TEST_PEX_RUN (pex1, PEX_SUFFIX, "./test-pexecute", subargv, ".y", NULL);
++  TEST_PEX_GET_STATUS (pex1, 2, statuses);
++  if (!WIFEXITED (statuses[0]) || WEXITSTATUS (statuses[0]) != EXIT_SUCCESS
++      || !WIFEXITED (statuses[1]) || WEXITSTATUS (statuses[1]) != EXIT_SUCCESS)
++    ERROR ("echoerr exit status failed");
++  pex_free (pex1);
++  if (fopen ("temp.x", "r") != NULL || fopen ("temp.y", "r") != NULL)
++    ERROR ("temporary files exist");
++  e = fopen ("temp2.x", "r");
++  if (e == NULL)
++    FATAL_ERROR ("fopen temp2.x failed in echoerr", errno);
++  CHECK_LINE (e, "two");
++  fclose (e);
++  e = fopen ("temp2.y", "r");
++  if (e == NULL)
++    FATAL_ERROR ("fopen temp2.y failed in echoerr", errno);
++  CHECK_LINE (e, "one");
++  fclose (e);
++  remove ("temp2.x");
++  remove ("temp2.y");
++
++  /* Test the old pexecute interface.  */
++  {
++    int pid1, pid2;
++    char *errmsg_fmt;
++    char *errmsg_arg;
++    char errbuf1[1000];
++    char errbuf2[1000];
++
++    subargv[1] = "echo";
++    subargv[2] = "oldpexecute";
++    subargv[3] = NULL;
++    pid1 = pexecute ("./test-pexecute", subargv, "test-pexecute", "temp",
++		     &errmsg_fmt, &errmsg_arg, PEXECUTE_FIRST);
++    if (pid1 < 0)
++      {
++	snprintf (errbuf1, sizeof errbuf1, errmsg_fmt, errmsg_arg);
++	snprintf (errbuf2, sizeof errbuf2, "pexecute 1 failed: %s", errbuf1);
++	FATAL_ERROR (errbuf2, 0);
++      }
++
++    subargv[1] = "write";
++    subargv[2] = "temp.y";
++    subargv[3] = NULL;
++    pid2 = pexecute ("./test-pexecute", subargv, "test-pexecute", "temp",
++		     &errmsg_fmt, &errmsg_arg, PEXECUTE_LAST);
++    if (pid2 < 0)
++      {
++	snprintf (errbuf1, sizeof errbuf1, errmsg_fmt, errmsg_arg);
++	snprintf (errbuf2, sizeof errbuf2, "pexecute 2 failed: %s", errbuf1);
++	FATAL_ERROR (errbuf2, 0);
++      }
++
++    if (pwait (pid1, &status, 0) < 0)
++      FATAL_ERROR ("write pwait 1 failed", errno);
++    if (!WIFEXITED (status) || WEXITSTATUS (status) != EXIT_SUCCESS)
++      ERROR ("write exit status 1 failed");
++
++    if (pwait (pid2, &status, 0) < 0)
++      FATAL_ERROR ("write pwait 1 failed", errno);
++    if (!WIFEXITED (status) || WEXITSTATUS (status) != EXIT_SUCCESS)
++      ERROR ("write exit status 2 failed");
++
++    e = fopen ("temp.y", "r");
++    if (e == NULL)
++      FATAL_ERROR ("fopen temp.y failed in copy temp", errno);
++    CHECK_LINE (e, "oldpexecute");
++    fclose (e);
++
++    remove ("temp.y");
++  }
++
++  if (trace)
++    fprintf (stderr, "Exiting with status %d\n", error_count);
++
++  return error_count;
++}
++
++/* Execute one of the special testing commands.  */
++
++static void
++do_cmd (int argc, char **argv)
++{
++  const char *s;
++
++  /* Try to prevent generating a core dump.  */
++#ifdef RLIMIT_CORE
++ {
++   struct rlimit r;
++
++   r.rlim_cur = 0;
++   r.rlim_max = 0;
++   setrlimit (RLIMIT_CORE, &r);
++ }
++#endif
++
++  s = argv[1];
++  if (strcmp (s, "exit") == 0)
++    exit (EXIT_SUCCESS);
++  else if (strcmp (s, "echo") == 0)
++    {
++      int i;
++
++      for (i = 2; i < argc; ++i)
++	{
++	  if (i > 2)
++	    putchar (' ');
++	  fputs (argv[i], stdout);
++	}
++      putchar ('\n');
++      exit (EXIT_SUCCESS);
++    }
++  else if (strcmp (s, "echoerr") == 0)
++    {
++      int i;
++
++      for (i = 2; i < argc; ++i)
++	{
++	  if (i > 3)
++	    putc (' ', (i & 1) == 0 ? stdout : stderr);
++	  fputs (argv[i], (i & 1) == 0 ? stdout : stderr);
++	}
++      putc ('\n', stdout);
++      putc ('\n', stderr);
++      exit (EXIT_SUCCESS);
++    }
++  else if (strcmp (s, "error") == 0)
++    exit (EXIT_FAILURE);
++  else if (strcmp (s, "abort") == 0)
++    abort ();
++  else if (strcmp (s, "copy") == 0)
++    {
++      int c;
++
++      while ((c = getchar ()) != EOF)
++	putchar (c);
++      exit (EXIT_SUCCESS);
++    }
++  else if (strcmp (s, "write") == 0)
++    {
++      FILE *e;
++      int c;
++
++      e = fopen (argv[2], "w");
++      if (e == NULL)
++	FATAL_ERROR ("fopen for write failed", errno);
++      while ((c = getchar ()) != EOF)
++	putc (c, e);
++      if (fclose (e) != 0)
++	FATAL_ERROR ("fclose for write failed", errno);
++      exit (EXIT_SUCCESS);
++    }
++  else
++    {
++      char buf[1000];
++
++      snprintf (buf, sizeof buf, "unrecognized command %s", argv[1]);
++      FATAL_ERROR (buf, 0);
++    }
++
++  exit (EXIT_FAILURE);
++}
+-- 
+2.43.5
+
